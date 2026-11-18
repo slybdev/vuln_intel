@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vulnintel}
+      POSTGRES_USER: ${POSTGRES_USER:-vulnintel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vulnintel}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - vuln-intel-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  scan-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.scan-worker
+    environment:
+      VULN_DATABASE_URL: postgresql://${POSTGRES_USER:-vulnintel}:${POSTGRES_PASSWORD:-vulnintel}@postgres:5432/${POSTGRES_DB:-vulnintel}
+      VULN_REPOSITORY_ENCRYPTION_KEY: ${VULN_REPOSITORY_ENCRYPTION_KEY:-}
+      VULN_REPOSITORY_HOSTS: ${VULN_REPOSITORY_HOSTS:-github.com,gitlab.com}
+      VULN_INVENTORY_CALLBACK_HOSTS: ${VULN_INVENTORY_CALLBACK_HOSTS:-}
+      TRIVY_VERSION: ${TRIVY_VERSION:-0.76.2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - vuln-intel-scan-data:/data
+    restart: unless-stopped
+
+volumes:
+  vuln-intel-postgres:
+  vuln-intel-scan-data:

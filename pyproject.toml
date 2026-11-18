@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vuln-intel"
+version = "1.0.0"
+description = "Daily vulnerability intelligence collection (NVD, OSV, GHSA, CISA KEV, EPSS) and normalization"
+requires-python = ">=3.9"
+dependencies = [
+    "psycopg[binary]>=3.1,<4",
+    "packaging>=23,<27",
+    "semantic-version>=2.10,<3",
+    "cryptography>=41,<47",
+]
+
+[project.scripts]
+vuln-intel = "vuln_intel.cli:main"
+vuln-intel-dashboard = "vuln_intel.dashboard:main"
+
+[tool.setuptools.packages.find]
+include = ["vuln_intel*"]
+
+[tool.setuptools.package-data]
+vuln_intel = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.ruff]
+line-length = 120

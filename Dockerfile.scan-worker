@@ -1,0 +1,22 @@
+FROM aquasec/trivy:0.76.2 AS trivy
+
+FROM python:3.11-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY vuln_intel ./vuln_intel
+RUN pip install --no-cache-dir .
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+RUN mkdir -p /data/scans /data/trivy-cache /data/worker-data \
+    && chown -R 10001:10001 /data
+
+USER 10001:10001
+ENV VULN_SCAN_ARTIFACTS_DIR=/data/scans \
+    VULN_TRIVY_CACHE_DIR=/data/trivy-cache \
+    VULN_DATA_DIR=/data/worker-data
+
+CMD ["python", "-m", "vuln_intel.scan_worker"]

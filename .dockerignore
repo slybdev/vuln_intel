@@ -1,0 +1,9 @@
+.env
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+vuln_data
+tests

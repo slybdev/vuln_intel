@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Overview · Vuln Intel</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body class="sidebar-collapsed">
+  <div class="app-shell">
+    <aside class="sidebar" id="main-sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <button class="brand-mark sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Expand sidebar" aria-controls="primary-navigation" aria-expanded="false" title="Expand sidebar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8 20 6v5.6c0 4.7-3.1 8-8 9.7-4.9-1.7-8-5-8-9.7V6l8-3.2Z"/><path d="m8.7 12.1 2.1 2.1 4.8-5"/></svg>
+          </button>
+          <a class="brand-copy" href="/" aria-label="Vuln Intel home"><strong>vuln<span>intel</span></strong><small>THREAT OPERATIONS</small></a>
+        </div>
+      </div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="primary-nav" id="primary-navigation" aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview" aria-label="Overview" aria-current="page" title="Overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4" rx="1.5"/><rect x="13.5" y="10.5" width="7" height="10" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>Overview</span></button>
+        <button class="nav-item" data-view="vulnerabilities" aria-label="Vulnerabilities" title="Vulnerabilities"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5M10.8 7.5v3.7l2.4 1.5"/></svg><span>Vulnerabilities</span><span class="nav-count" id="nav-total">—</span></button>
+        <button class="nav-item" data-view="scans" aria-label="Application scans" title="Application scans"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4.5 7.8 7.5 4.3 7.5-4.3M12 12v8.5"/></svg><span>Application scans</span></button>
+        <button class="nav-item" data-view="repositories" aria-label="Repository settings" title="Repository settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1a1.7 1.7 0 0 1-2.4 2.4l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 0 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.1.1a1.7 1.7 0 0 1-2.4-2.4l.1-.1a1.7 1.7 0 0 0-1.2-2.9H4a1.7 1.7 0 0 1 0-3.4h.2a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a1.7 1.7 0 0 1 2.4-2.4l.1.1a1.7 1.7 0 0 0 2.9-1.2V2a1.7 1.7 0 0 1 3.4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a1.7 1.7 0 0 1 2.4 2.4l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.2a1.7 1.7 0 0 1 0 3.4h-.2a1.7 1.7 0 0 0-1.2 2.9Z"/></svg><span>Repository settings</span></button>
+      </nav>
+      <div class="nav-label sources-label">INTELLIGENCE</div>
+      <div class="source-nav" id="source-nav">
+        <div class="source-nav-item" title="NVD"><span class="source-dot nvd"></span><span>NVD</span><span class="source-symbol">↗</span></div>
+        <div class="source-nav-item" title="OSV"><span class="source-dot osv"></span><span>OSV</span><span class="source-symbol">↗</span></div>
+        <div class="source-nav-item" title="GitHub Advisories"><span class="source-dot ghsa"></span><span>GitHub Advisories</span><span class="source-symbol">↗</span></div>
+        <div class="source-nav-item" title="CISA KEV"><span class="source-dot kev"></span><span>CISA KEV</span><span class="source-symbol">↗</span></div>
+        <div class="source-nav-item" title="EPSS"><span class="source-dot epss"></span><span>EPSS</span><span class="source-symbol">↗</span></div>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="db-status"><span class="pulse-dot" id="database-dot"></span><div><strong id="database-state">Checking database</strong><small>PostgreSQL connection</small></div></div>
+        <div class="sidebar-foot"><span>VULN INTEL</span><span>v1.0</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-content">
+        <section class="page-heading" id="page-heading">
+          <div class="heading-copy">
+            <div class="eyebrow"><span class="live-dot"></span><span id="page-eyebrow">THREAT LANDSCAPE</span><span class="eyebrow-line" id="page-eyebrow-line"></span><span id="as-of">FEEDS MONITORED</span></div>
+            <h1 id="page-title">Security overview</h1>
+            <p id="page-description">A clear view of the vulnerabilities that matter across your intelligence sources.</p>
+            <div class="heading-meta"><span class="sync-icon">⟳</span><span id="last-sync">Sync status loading</span></div>
+          </div>
+          <div class="heading-actions">
+            <label class="global-search" id="global-search-control" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg>
+              <input id="global-search" type="search" aria-label="Search vulnerabilities" placeholder="Search vulnerabilities…" autocomplete="off">
+              <kbd>/</kbd>
+            </label>
+            <button class="icon-button" id="refresh-button" aria-label="Refresh dashboard" title="Refresh dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4.6 9a7.7 7.7 0 0 1 13-2L20 12M4 17v-5h5m10.4 3a7.7 7.7 0 0 1-13-2L4 12"/></svg></button>
+          </div>
+        </section>
+
+        <div class="view-page" id="overview-view">
+        <section class="metric-grid" aria-label="Key vulnerability metrics">
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-label">Tracked vulnerabilities</span><span class="metric-icon mint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6.2v5.5c0 4.6-3.1 8-8 9.5-4.9-1.5-8-4.9-8-9.5V6.2L12 3Z"/><path d="M9 12h6M12 9v6"/></svg></span></div>
+            <div class="metric-value" id="metric-total">—</div><div class="metric-foot"><span class="metric-bullet mint-bullet"></span>Across all connected sources</div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-label">Known exploited</span><span class="metric-icon red"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 22 20H2L12 3Z"/><path d="M12 9v5m0 3h.01"/></svg></span></div>
+            <div class="metric-value" id="metric-kev">—</div><div class="metric-foot"><span class="metric-bullet red-bullet"></span>Listed in CISA KEV catalog</div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-label">Critical severity</span><span class="metric-icon red"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.4 5.2 5.7.7-4.2 4 .9 5.7-4.8-2.8-5.1 2.8 1.1-5.7-4.2-4 5.7-.7L12 3Z"/></svg></span></div>
+            <div class="metric-value" id="metric-critical">—</div><div class="metric-foot"><span class="metric-bullet red-bullet"></span>CVSS critical or source-rated</div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-label">High EPSS probability</span><span class="metric-icon violet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V6m0 12h16M7 15l4-4 3 2 5-6"/><path d="M15.5 7H19v3.5"/></svg></span></div>
+            <div class="metric-value" id="metric-epss">—</div><div class="metric-foot"><span class="metric-bullet violet-bullet"></span>EPSS score ≥ 70%</div>
+          </article>
+        </section>
+
+        <section class="overview-grid">
+          <article class="panel severity-panel">
+            <div class="panel-heading"><div><h2>Severity distribution</h2><p>All tracked vulnerabilities by severity</p></div><button class="text-button" data-open-list>Explore all <span>→</span></button></div>
+            <div class="severity-content">
+              <div class="donut-wrap"><svg id="severity-chart" viewBox="0 0 160 160" role="img" aria-label="Vulnerability severity distribution"><circle class="donut-track" cx="80" cy="80" r="60"/><g id="severity-arcs"></g></svg><div class="donut-center"><strong id="donut-total">—</strong><span>VULNERABILITIES</span></div></div>
+              <div class="severity-legend" id="severity-legend"></div>
+            </div>
+          </article>
+          <article class="panel risk-panel">
+            <div class="panel-heading"><div><h2>Priority watchlist</h2><p>Actively exploited and high-probability risks</p></div><span class="watchlist-badge"><span></span> LIVE</span></div>
+            <div class="watchlist" id="watchlist"><div class="loading-line"></div><div class="loading-line"></div><div class="loading-line"></div></div>
+          </article>
+        </section>
+
+        <section class="panel publication-panel" aria-labelledby="publication-heading">
+            <div class="publication-card-header">
+              <div class="publication-copy"><h2 id="publication-heading">Monthly published advisories</h2><p>New vulnerabilities by original publication month · rolling 12 months</p></div>
+              <div class="publication-metrics" id="publication-metrics" role="group" aria-label="Select monthly publication series">
+                <button class="publication-stat is-active" type="button" data-publication-metric="all" aria-pressed="true">
+                  <span>All advisories</span><strong id="publication-total-all">Loading…</strong>
+                </button>
+                <button class="publication-stat" type="button" data-publication-metric="priority" aria-pressed="false">
+                  <span>Critical + High</span><strong id="publication-total-priority">Loading…</strong>
+                </button>
+              </div>
+            </div>
+            <div class="trend-chart-scroll">
+              <svg id="publication-chart" class="publication-chart" viewBox="0 0 800 260" role="img" aria-labelledby="publication-chart-title publication-chart-description">
+                <title id="publication-chart-title">Monthly published advisories</title>
+                <desc id="publication-chart-description">Monthly total advisories. Focus or hover over a column to see its severity breakdown.</desc>
+                <g id="publication-grid"></g>
+                <g id="publication-bars"></g>
+                <g id="publication-x-axis"></g>
+              </svg>
+              <div class="trend-chart-state" id="publication-chart-state" role="status" hidden></div>
+            </div>
+            <table class="visually-hidden">
+              <caption>Monthly publication totals and severity breakdown for the previous 12 months</caption>
+              <thead><tr><th scope="col">Month</th><th scope="col">Total</th><th scope="col">Critical</th><th scope="col">High</th><th scope="col">Medium</th><th scope="col">Low</th><th scope="col">Unrated</th></tr></thead>
+              <tbody id="publication-data-rows"></tbody>
+            </table>
+            <p class="trend-note">Counts use each advisory’s original publication date; source updates are not treated as new vulnerabilities.</p>
+        </section>
+
+        <section class="panel source-panel">
+          <div class="panel-heading"><div><h2>Intelligence coverage</h2><p>Canonical vulnerabilities contributed by each source</p></div><span class="coverage-note"><span class="pulse-dot"></span> 5 FEEDS CONFIGURED</span></div>
+          <div class="source-cards" id="source-cards"></div>
+          <div class="source-insight">Source totals overlap when multiple feeds report the same vulnerability.</div>
+        </section>
+        </div>
+
+        <div class="view-page" id="vulnerabilities-view" hidden>
+        <section class="panel table-panel" id="vulnerability-section">
+          <div class="panel-heading table-heading">
+            <div><h2>All vulnerabilities</h2><p>Search, filter, and inspect normalized vulnerability intelligence</p></div>
+            <div class="table-tools"><select id="severity-filter" aria-label="Filter by severity"><option value="">All severity</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unknown</option></select><label class="kev-filter"><input type="checkbox" id="kev-filter"><span>KEV only</span></label></div>
+          </div>
+          <div class="table-scroll"><table><thead><tr><th>VULNERABILITY</th><th>SEVERITY</th><th>CVSS</th><th>EPSS</th><th>SOURCES</th><th>LAST MODIFIED</th><th></th></tr></thead><tbody id="vulnerability-rows"><tr><td colspan="7" class="empty-state">Loading vulnerability intelligence…</td></tr></tbody></table></div>
+          <div class="table-footer"><span id="result-count">Loading…</span><div class="pagination"><button id="previous-page" aria-label="Previous page" disabled>←</button><span id="page-label">Page 1</span><button id="next-page" aria-label="Next page">→</button></div></div>
+        </section>
+        </div>
+
+        <div class="view-page" id="application-scans-view" hidden>
+          <section class="scan-workspace-toolbar">
+            <label for="scan-app-select">Application<select id="scan-app-select" aria-label="Choose application"></select></label>
+            <div class="scan-workspace-actions">
+              <button class="secondary-button" id="scan-refresh-button" type="button">Refresh data</button>
+              <button class="primary-button" id="scan-add-app-toggle" type="button" aria-expanded="false" aria-controls="scan-github-panel">Add application</button>
+            </div>
+          </section>
+          <section class="panel repository-settings-panel scan-add-panel" id="scan-github-panel" hidden>
+            <div class="panel-heading"><div><h2>Add a repository application</h2><p>Register a GitHub or configured GitLab repository and queue its latest default-branch commit</p></div></div>
+            <form id="scan-github-form" class="repository-form">
+              <label class="repo-url-field">Repository URL<input id="scan-github-url" name="repository_url" type="url" required placeholder="https://github.com/company/service or http://gitlab.internal/group/service" autocomplete="url"></label>
+              <div class="repository-form-actions"><button class="primary-button" type="submit">Add and scan</button></div>
+            </form>
+            <p class="repository-security-note">Private repositories use the saved provider credentials from Repository settings. HTTP is supported only for configured self-hosted GitLab hosts and sends credentials without transport encryption; use it only on a trusted network. Repository content is discarded after each scan.</p>
+          </section>
+          <section class="panel scan-empty-state" id="scan-empty-state" hidden>
+            <div class="scan-empty-mark" aria-hidden="true">01</div>
+            <h2>No scanned applications yet</h2>
+            <p>Add a GitHub or configured GitLab repository to see its exposure posture, dependency findings, remediation guidance, and scan history here.</p>
+            <button class="primary-button" id="scan-empty-add" type="button">Add your first application</button>
+          </section>
+          <div id="scan-application-dashboard" hidden>
+            <section class="panel application-summary-card">
+              <div class="application-identity">
+                <div class="application-mark" aria-hidden="true">APP</div>
+                <div class="application-identity-copy">
+                  <div class="application-title-line"><h2 id="scan-app-name">Application</h2><span class="scan-status" id="scan-latest-status">Unknown</span></div>
+                  <a id="scan-app-url" href="#" target="_blank" rel="noopener noreferrer"></a>
+                  <div class="application-meta-line">
+                    <span id="scan-app-id"></span><span class="meta-separator" aria-hidden="true">/</span>
+                    <span id="scan-app-ref"></span><span class="meta-separator" aria-hidden="true">/</span>
+                    <span id="scan-app-commit"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="application-scan-summary">
+                <span class="summary-label">LAST SCAN</span>
+                <strong id="scan-last-scanned">—</strong>
+                <span id="scan-run-message">Waiting for scan data</span>
+              </div>
+              <button class="primary-button" id="scan-run-again" type="button">Scan latest commit</button>
+            </section>
+            <div class="scan-attempt-notice" id="scan-attempt-notice" role="status" hidden></div>
+
+            <section class="scan-kpi-grid" aria-label="Application exposure metrics">
+              <article class="scan-kpi-card kpi-active"><span>Active findings</span><strong id="app-kpi-active">—</strong><small>currently detected</small></article>
+              <article class="scan-kpi-card kpi-priority"><span>Critical + high</span><strong id="app-kpi-priority">—</strong><small>highest severity exposures</small></article>
+              <article class="scan-kpi-card kpi-fix"><span>Fix available</span><strong id="app-kpi-fix">—</strong><small>findings with a fixed version</small></article>
+              <article class="scan-kpi-card kpi-new"><span>New this scan</span><strong id="app-kpi-new">—</strong><small id="app-kpi-new-note">compared with prior scan</small></article>
+              <article class="scan-kpi-card kpi-components"><span>Components scanned</span><strong id="app-kpi-components">—</strong><small id="app-kpi-components-note">latest successful run</small></article>
+            </section>
+
+            <section class="panel scan-findings-panel">
+              <div class="scan-findings-heading">
+                <div><span class="section-kicker">PRIORITIZED EXPOSURES</span><h3>Vulnerability findings</h3><p>Investigate highest-risk packages and apply available fixes</p></div>
+                <div class="scan-finding-tabs" role="tablist" aria-label="Finding status">
+                  <button class="scan-finding-tab active" id="scan-active-tab" type="button" role="tab" aria-selected="true" data-status="active">Active <span id="scan-active-tab-count">0</span></button>
+                  <button class="scan-finding-tab" id="scan-resolved-tab" type="button" role="tab" aria-selected="false" data-status="resolved">Resolved <span id="scan-resolved-tab-count">0</span></button>
+                </div>
+              </div>
+              <div class="scan-finding-tools">
+                <label class="scan-finding-search"><span class="visually-hidden">Search findings</span><input id="scan-finding-search" type="search" placeholder="Search CVE, package, or fix…"></label>
+                <label class="scan-finding-severity"><span class="visually-hidden">Filter by finding severity</span><select id="scan-finding-severity"><option value="">All severities</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option><option value="UNKNOWN">Unrated</option></select></label>
+                <span id="scan-finding-count" class="scan-finding-count" aria-live="polite"></span>
+              </div>
+              <div class="table-scroll scan-findings-scroll">
+                <table class="scan-findings-table">
+                  <thead><tr><th>SEVERITY / CVSS</th><th>VULNERABILITY</th><th>AFFECTED COMPONENT</th><th>FIX VERSION</th><th>DETECTED BY</th><th>FIRST SEEN</th><th></th></tr></thead>
+                  <tbody id="application-finding-rows"><tr><td colspan="7" class="empty-state">Select an application to load findings.</td></tr></tbody>
+                </table>
+              </div>
+              <div class="table-footer"><span>Open any finding for scanner evidence, references, and remediation details.</span><span id="scan-latest-scanner"></span></div>
+            </section>
+
+            <section class="scan-visual-grid" aria-label="Application vulnerability charts">
+              <article class="panel scan-chart-panel scan-trend-panel">
+                <div class="scan-panel-heading"><div><span class="section-kicker">SCAN HISTORY</span><h3>Exposure trend</h3><p>Findings reported by each successful scan</p></div><span class="chart-units">FINDINGS</span></div>
+                <div class="scan-trend-wrap">
+                  <svg id="scan-trend-chart" class="scan-trend-chart" viewBox="0 0 640 190" role="img" aria-label="Application findings trend"></svg>
+                  <div id="scan-trend-note" class="scan-chart-note" role="status" hidden></div>
+                </div>
+              </article>
+              <article class="panel scan-chart-panel">
+                <div class="scan-panel-heading"><div><span class="section-kicker">CURRENT EXPOSURE</span><h3>Severity profile</h3><p>Active findings by severity</p></div></div>
+                <div class="scan-severity-layout">
+                  <svg id="scan-severity-chart" class="scan-severity-chart" viewBox="0 0 140 140" role="img" aria-label="Severity distribution"></svg>
+                  <div id="scan-severity-legend" class="scan-severity-legend"></div>
+                </div>
+              </article>
+            </section>
+
+            <section class="scan-secondary-grid" aria-label="Dependency and detection summaries">
+              <article class="panel scan-chart-panel">
+                <div class="scan-panel-heading"><div><span class="section-kicker">DEPENDENCY HOTSPOTS</span><h3>Package risk concentration</h3><p>Active findings by package, segmented by severity</p></div></div>
+                <div id="scan-package-chart" class="scan-package-chart"></div>
+              </article>
+              <article class="panel scan-chart-panel">
+                <div class="scan-panel-heading"><div><span class="section-kicker">DETECTION COVERAGE</span><h3>Finding sources</h3><p>Overlapping evidence is counted for each source</p></div></div>
+                <div id="scan-source-chart" class="scan-source-chart"></div>
+                <p class="scan-chart-footnote">Trivy scans dependency and operating-system packages; internal matches come from your vulnerability intelligence feeds.</p>
+              </article>
+            </section>
+
+            <section class="panel scan-history-panel">
+              <details id="scan-history-details">
+                <summary><span><strong>Scan history</strong><small>Commits, scan status, and inventory coverage</small></span><span id="scan-history-count">0 runs</span></summary>
+                <div class="table-scroll"><table class="scan-history-table"><thead><tr><th>STATUS</th><th>COMMIT</th><th>BRANCH / REF</th><th>COMPONENTS</th><th>FINDINGS</th><th>REQUESTED</th></tr></thead><tbody id="scan-history-rows"></tbody></table></div>
+              </details>
+            </section>
+          </div>
+          <dialog id="scan-finding-dialog" class="scan-finding-dialog" aria-labelledby="scan-finding-title">
+            <div class="scan-finding-dialog-shell">
+              <header class="scan-finding-dialog-heading">
+                <div><span class="section-kicker">VULNERABILITY RECORD</span><h2 id="scan-finding-title">Finding details</h2><p id="scan-finding-subtitle"></p></div>
+                <button class="dialog-close-button" id="scan-finding-close" type="button" aria-label="Close finding details">×</button>
+              </header>
+              <div id="scan-finding-detail-content" class="scan-finding-detail-content"></div>
+            </div>
+          </dialog>
+        </div>
+        <div class="view-page" id="repository-settings-view" hidden>
+          <section class="panel repository-settings-panel">
+            <div class="panel-heading"><div><h2>Connect Git provider</h2><p>Save a GitHub or GitLab account token once to use with your repositories</p></div></div>
+            <p class="repository-security-note">GitHub and GitLab credentials are encrypted in PostgreSQL and reused for repositories from that provider. GitHub requires a fine-grained personal access token with read-only Contents access. GitLab uses a personal access token with read_repository scope. Configure self-hosted GitLab hosts in VULN_REPOSITORY_HOSTS. HTTP repository URLs are supported for those hosts, but transmit credentials without encryption; use only on a trusted network.</p>
+            <form id="provider-credentials-form" class="repository-form">
+              <label>Git provider<select id="provider-name" name="provider" required><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
+              <label>Username<input id="provider-username" name="username" maxlength="4096" required autocomplete="username"></label>
+              <label class="repo-password-field">Personal access token <span>(leave empty to keep the saved token)</span><input id="provider-token" name="token" type="password" maxlength="4096" autocomplete="new-password"></label>
+              <div class="repository-form-actions"><button class="primary-button" type="submit">Save provider credentials</button></div>
+            </form>
+          </section>
+          <section class="panel table-panel">
+            <div class="panel-heading table-heading"><div><h2>Configured providers</h2><p>Tokens are never displayed after saving</p></div></div>
+            <div class="table-scroll"><table><thead><tr><th>PROVIDER</th><th>STATUS</th><th>UPDATED</th><th></th></tr></thead><tbody id="provider-rows"><tr><td colspan="4" class="empty-state">No provider credentials are configured.</td></tr></tbody></table></div>
+          </section>
+          <section class="panel repository-settings-panel">
+            <div class="panel-heading"><div><h2>Add application repository</h2><p>Each application only needs its repository URL; Vuln Intel selects credentials by provider</p></div></div>
+            <form id="repository-form" class="repository-form">
+              <label>Application ID<input id="repository-application-id" name="application_id" maxlength="128" required pattern="[A-Za-z0-9][A-Za-z0-9._:\-]*" autocomplete="off"></label>
+              <label>Display name<input id="repository-name" name="name" maxlength="256" autocomplete="off"></label>
+              <label class="repo-url-field">Repository URL<input id="repository-url" name="repository_url" type="url" required placeholder="https://github.com/company/service.git or http://gitlab.internal/group/service.git" autocomplete="url"></label>
+              <div class="repository-form-actions"><button class="primary-button" type="submit">Save connection</button></div>
+            </form>
+          </section>
+          <section class="panel table-panel">
+            <div class="panel-heading table-heading"><div><h2>Connected repositories</h2><p>Repositories will be scanned using their matching provider credentials</p></div></div>
+            <div class="table-scroll"><table><thead><tr><th>APPLICATION</th><th>REPOSITORY</th><th>PROVIDER</th><th>UPDATED</th><th></th></tr></thead><tbody id="repository-rows"><tr><td colspan="5" class="empty-state">No repository connections are configured.</td></tr></tbody></table></div>
+            <div class="table-footer"><span id="repository-result-count">0 connected repositories</span><span>Repositories must use a host configured in VULN_REPOSITORY_HOSTS.</span></div>
+          </section>
+        </div>
+        <footer class="page-footer"><span>VULN INTEL <span class="footer-dot">·</span> Intelligence, made actionable.</span><span id="footer-updated">LOCAL INSTANCE</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="detail-dialog" class="detail-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close details">×</button></form><div id="detail-content"></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
