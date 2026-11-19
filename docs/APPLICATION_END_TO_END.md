@@ -43,7 +43,7 @@ callback deliveries.
 | Per-source API and file collectors | `vuln_intel/collectors/` |
 | Source mapping, validation, alias resolution, and standardization | `vuln_intel/normalization/` |
 | PostgreSQL schema and advisory persistence | `vuln_intel/database.py` |
-| Dashboard HTTP API and static UI | `vuln_intel/dashboard.py`, `vuln_intel/web/` |
+| Tactical Ops UI and HTTP API | `src/`, `vuln_intel/dashboard.py` |
 | Repository validation and encrypted provider credentials | `vuln_intel/repository_connections.py` |
 | Scan request validation, queue persistence, and history | `vuln_intel/scan_service.py`, `vuln_intel/scan_store.py` |
 | Git checkout, Trivy execution, and worker loop | `vuln_intel/scan_worker.py` |

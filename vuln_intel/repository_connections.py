@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import re
 import urllib.error
 import urllib.request
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
-from vuln_intel import config
+from vuln_intel import config, event_store
 from vuln_intel.database import _connect, _ensure_schema
 
 _APPLICATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_ACCESS_TOKEN_LENGTH = 4096
 _GITHUB_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 _GITHUB_REPOSITORY = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
+_GITLAB_SEGMENT = re.compile(r"[A-Za-z0-9._-]{1,255}\Z")
 
 
 class RepositoryEncryptionError(RuntimeError):
@@ -96,20 +96,14 @@ def validate_repository_url(repository_url: str) -> str:
         raise TypeError("Repository URL must be a string.")
     try:
         parsed = urlsplit(repository_url.strip())
-        _ = parsed.port
+        port = parsed.port
     except ValueError as exc:
         raise ValueError("Repository URL is malformed.") from exc
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    allowed_hosts = {host.lower().rstrip(".") for host in config.REPOSITORY_HOSTS}
-    try:
-        is_unspecified = ipaddress.ip_address(hostname).is_unspecified
-    except ValueError:
-        is_unspecified = False
-    if (parsed.scheme not in {"https", "http"} or not hostname or parsed.username or parsed.password
-            or parsed.query or parsed.fragment or hostname not in allowed_hosts or is_unspecified):
-        raise ValueError("Repository URL must use an allowed repository host and HTTP or HTTPS.")
-    if parsed.scheme == "http" and hostname in {"github.com", "gitlab.com"}:
-        raise ValueError("Use HTTPS for github.com and gitlab.com; HTTP is only supported for configured self-hosted GitLab.")
+    allowed_hosts = {host.lower() for host in config.REPOSITORY_HOSTS}
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or port not in (None, 443)
+            or parsed.hostname.lower() not in allowed_hosts):
+        raise ValueError("Repository URL must use HTTPS and an allowed repository host.")
     if not parsed.path.strip("/") or any(part in {".", ".."} for part in parsed.path.split("/")):
         raise ValueError("Repository URL has an invalid path.")
     return parsed._replace(query="", fragment="").geturl().rstrip("/")
@@ -167,52 +161,66 @@ def provider_for_repository(repository_url: str) -> str:
     return "gitlab"
 
 
-def repository_application_from_url(repository_url: str) -> dict:
+def github_application_from_url(repository_url: str) -> dict:
     validated_url = validate_repository_url(repository_url)
     parsed = urlsplit(validated_url)
+    if parsed.hostname.lower() != "github.com":
+        raise ValueError("Enter a GitHub repository URL.")
     parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
-    parts[-1] = re.sub(r"\.git$", "", parts[-1], flags=re.IGNORECASE)
-    if any(not part or part in {".", ".."} or "/" in part or "\\" in part
-           or any(ord(char) < 32 for char in part) for part in parts):
-        raise ValueError("Repository URL has an invalid namespace or repository name.")
-    provider = provider_for_repository(validated_url)
-    hostname = parsed.hostname.lower()
-    if provider == "github":
-        if len(parts) != 2:
-            raise ValueError("Enter the repository root URL, such as https://github.com/owner/repository.")
-        if not _GITHUB_OWNER.fullmatch(parts[0]) or not _GITHUB_REPOSITORY.fullmatch(parts[1]):
-            raise ValueError("The GitHub repository URL has an invalid owner or repository name.")
-        prefix = "github"
-        identity = f"{parts[0].lower()}:{parts[1].lower()}"
-    else:
-        if len(parts) < 2:
-            raise ValueError("Enter the repository root URL, including its namespace and project.")
-        prefix = "gitlab"
-        port = parsed.port
-        authority = hostname if port is None else f"{hostname}:{port}"
-        identity = f"{authority}:{'/'.join(parts).casefold()}"
-    display_path = "/".join(parts)
-    if prefix == "github":
-        application_id = f"{prefix}:{identity}"
-        if len(application_id) > 128:
-            suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
-            application_id = f"{application_id[:115]}:{suffix}"
-    else:
-        application_id = f"{prefix}:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:48]}"
-    encoded_path = "/".join(quote(part, safe="!$&'()*+,;=:@-._~") for part in parts)
+    if len(parts) != 2:
+        raise ValueError("Enter the repository root URL, such as https://github.com/owner/repository.")
+    owner, repository = parts
+    repository = re.sub(r"\.git$", "", repository, flags=re.IGNORECASE)
+    if (not _GITHUB_OWNER.fullmatch(owner) or not _GITHUB_REPOSITORY.fullmatch(repository)
+            or repository in {".", ".."}):
+        raise ValueError("The GitHub repository URL has an invalid owner or repository name.")
+
+    identity = f"{owner.lower()}:{repository.lower()}"
+    application_id = f"github:{identity}"
+    if len(application_id) > 128:
+        suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        application_id = f"{application_id[:115]}:{suffix}"
     return {
         "application_id": application_id,
-        "name": display_path,
-        "repository_url": parsed._replace(path="/" + encoded_path).geturl().rstrip("/"),
-        "provider": provider,
+        "name": f"{owner}/{repository}",
+        "repository_url": f"https://github.com/{owner}/{repository}",
     }
 
 
-def github_application_from_url(repository_url: str) -> dict:
-    details = repository_application_from_url(repository_url)
-    if details["provider"] != "github":
-        raise ValueError("Enter a GitHub repository URL.")
-    return {key: details[key] for key in ("application_id", "name", "repository_url")}
+def gitlab_application_from_url(repository_url: str) -> dict:
+    validated_url = validate_repository_url(repository_url)
+    parsed = urlsplit(validated_url)
+    if parsed.hostname.lower() == "github.com":
+        raise ValueError("Enter a GitLab repository URL.")
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
+    if len(parts) < 2:
+        raise ValueError("Enter the GitLab repository root URL, including its group and project.")
+    project = re.sub(r"\.git$", "", parts[-1], flags=re.IGNORECASE)
+    namespace = parts[:-1]
+    if any(
+        not _GITLAB_SEGMENT.fullmatch(part) or part in {".", ".."}
+        for part in [*namespace, project]
+    ):
+        raise ValueError("The GitLab repository URL has an invalid group or project path.")
+
+    host = parsed.hostname.lower()
+    identity = f"{host}:{':'.join(part.lower() for part in namespace)}:{project.lower()}"
+    application_id = f"gitlab:{identity}"
+    if len(application_id) > 128:
+        suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        application_id = f"gitlab:{host[:40]}:{suffix}"
+    return {
+        "application_id": application_id,
+        "name": "/".join([*namespace, project]),
+        "repository_url": f"https://{host}/{'/'.join([*namespace, project])}",
+    }
+
+
+def application_from_url(repository_url: str) -> dict:
+    validated_url = validate_repository_url(repository_url)
+    if urlsplit(validated_url).hostname.lower() == "github.com":
+        return github_application_from_url(validated_url)
+    return gitlab_application_from_url(validated_url)
 
 
 def save_provider_credentials(provider: str, username: str, password: str):
@@ -248,7 +256,7 @@ def save_provider_credentials(provider: str, username: str, password: str):
                 raise ValueError("Provide a personal access token to configure this provider.")
         verification = _verify_github_credentials(username, password_to_verify)
 
-    conn, _ = _connect()
+    conn, Jsonb = _connect()
     with conn, conn.cursor() as cur:
         _ensure_schema(cur)
         cur.execute(
@@ -276,6 +284,20 @@ def save_provider_credentials(provider: str, username: str, password: str):
             (provider, encrypted_username, encrypted_password),
         )
         row = cur.fetchone()
+        event_store.insert_event(
+            cur,
+            Jsonb,
+            severity="INFO",
+            category="settings",
+            event_type="provider_credentials.configured",
+            source="Git provider settings",
+            message=f"{provider.title()} provider credentials configured",
+            target_type="provider",
+            target_id=provider,
+            outcome="updated" if current else "succeeded",
+            actor="local_operator",
+            details={"provider": provider},
+        )
     credentials = {"provider": row[0], "configured": True, "updated_at": row[1]}
     if verification:
         credentials["verification"] = verification
@@ -317,11 +339,30 @@ def get_provider_credentials(repository_url: str) -> dict:
 def delete_provider_credentials(provider: str) -> bool:
     if provider not in {"github", "gitlab"}:
         raise ValueError("Provider must be github or gitlab.")
-    conn, _ = _connect()
+    conn, Jsonb = _connect()
     with conn, conn.cursor() as cur:
         _ensure_schema(cur)
-        cur.execute("DELETE FROM git_provider_credentials WHERE provider = %s", (provider,))
-        deleted = cur.rowcount > 0
+        cur.execute(
+            "DELETE FROM git_provider_credentials WHERE provider = %s RETURNING provider",
+            (provider,),
+        )
+        row = cur.fetchone()
+        if row:
+            event_store.insert_event(
+                cur,
+                Jsonb,
+                severity="MEDIUM",
+                category="settings",
+                event_type="provider_credentials.removed",
+                source="Git provider settings",
+                message=f"{provider.title()} provider credentials removed",
+                target_type="provider",
+                target_id=provider,
+                outcome="deleted",
+                actor="local_operator",
+                details={"provider": provider},
+            )
+        deleted = row is not None
     return deleted
 
 
@@ -334,9 +375,14 @@ def save_repository_connection(application_id: str, repository_url: str, name: s
         raise ValueError("Repository name must be at most 256 characters.")
     normalized_name = name.strip() or application_id
 
-    conn, _ = _connect()
+    conn, Jsonb = _connect()
     with conn, conn.cursor() as cur:
         _ensure_schema(cur)
+        cur.execute(
+            "SELECT 1 FROM repository_connections WHERE application_id = %s FOR UPDATE",
+            (application_id,),
+        )
+        is_existing = cur.fetchone() is not None
         cur.execute(
             """
             INSERT INTO repository_connections
@@ -351,6 +397,20 @@ def save_repository_connection(application_id: str, repository_url: str, name: s
             (application_id, normalized_name, repository_url),
         )
         row = cur.fetchone()
+        event_store.insert_event(
+            cur,
+            Jsonb,
+            severity="INFO",
+            category="repository",
+            event_type="repository.updated" if is_existing else "repository.connected",
+            source="Repository inventory",
+            message=f"Repository {'updated' if is_existing else 'connected'}: {normalized_name}",
+            target_type="repository",
+            target_id=application_id,
+            outcome="updated" if is_existing else "succeeded",
+            actor="local_operator",
+            details={"repository_url": repository_url},
+        )
     return dict(zip(("application_id", "name", "repository_url", "updated_at"), row))
 
 
@@ -360,15 +420,13 @@ def list_repository_connections() -> list[dict]:
         _ensure_schema(cur)
         cur.execute(
             """
-            SELECT repository.application_id, repository.name, repository.repository_url,
-                   repository.updated_at, integration.external_inventory_id
-            FROM repository_connections AS repository
-            LEFT JOIN inventory_integrations AS integration USING (application_id)
-            ORDER BY repository.name, repository.application_id
+            SELECT application_id, name, repository_url, updated_at
+            FROM repository_connections
+            ORDER BY name, application_id
             """
         )
         rows = cur.fetchall()
-    columns = ("application_id", "name", "repository_url", "updated_at", "external_inventory_id")
+    columns = ("application_id", "name", "repository_url", "updated_at")
     return [dict(zip(columns, row)) for row in rows]
 
 
@@ -397,9 +455,31 @@ def get_repository_connection(application_id: str) -> dict:
 
 def delete_repository_connection(application_id: str) -> bool:
     application_id = _normalize_application_id(application_id)
-    conn, _ = _connect()
+    conn, Jsonb = _connect()
     with conn, conn.cursor() as cur:
         _ensure_schema(cur)
-        cur.execute("DELETE FROM repository_connections WHERE application_id = %s", (application_id,))
-        deleted = cur.rowcount > 0
+        cur.execute(
+            "DELETE FROM inventory_integrations WHERE application_id = %s",
+            (application_id,),
+        )
+        cur.execute(
+            "DELETE FROM repository_connections WHERE application_id = %s RETURNING name",
+            (application_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            event_store.insert_event(
+                cur,
+                Jsonb,
+                severity="MEDIUM",
+                category="repository",
+                event_type="repository.disconnected",
+                source="Repository inventory",
+                message=f"Repository disconnected: {row[0]}",
+                target_type="repository",
+                target_id=application_id,
+                outcome="deleted",
+                actor="local_operator",
+            )
+        deleted = row is not None
     return deleted

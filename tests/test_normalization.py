@@ -3,6 +3,7 @@ import unittest
 from vuln_intel.normalization.cvss import cvss3_score, make_cvss, severity_label
 from vuln_intel.normalization.ecosystems import std_ecosystem, std_package
 from vuln_intel.normalization.mappers import NORMALIZERS
+from vuln_intel.normalization.mappers.nvd import normalize_nvd
 from vuln_intel.normalization.resolver import Store, expand_views, pick_canonical
 from vuln_intel.normalization.schema import validate_view
 from vuln_intel.normalization.versions import osv_events_to_intervals, parse_constraint_range
@@ -63,6 +64,70 @@ class VersionRangeTests(unittest.TestCase):
         osv = osv_events_to_intervals([{"introduced": "1.0"}, {"fixed": "1.5"}])[0]["expr"]
         ghsa = parse_constraint_range(">= 1.0, < 1.5")["expr"]
         self.assertEqual(osv, ghsa)
+
+
+class NvdAffectedMappingTests(unittest.TestCase):
+    def test_nvd_keeps_platform_and_advisory_version_range(self):
+        record = {
+            "id": "CVE-2026-40895",
+            "affected": [{
+                "affectedData": [{
+                    "vendor": "follow-redirects",
+                    "product": "follow-redirects",
+                    "versions": [{"version": "< 1.16.0", "status": "affected"}],
+                }],
+            }],
+            "configurations": [{
+                "nodes": [{
+                    "cpeMatch": [{
+                        "vulnerable": True,
+                        "criteria": "cpe:2.3:a:follow-redirects_project:follow-redirects:*:*:*:*:*:node.js:*:*",
+                        "versionEndExcluding": "1.16.0",
+                    }],
+                }],
+            }],
+        }
+
+        normalized = normalize_nvd(record)
+        node_entry = next(item for item in normalized["affected"] if item.get("target_sw") == "node.js")
+
+        self.assertEqual(node_entry["package"], "follow-redirects")
+        self.assertEqual(node_entry["ranges"][0]["expr"], "<1.16.0")
+
+    def test_nvd_affected_range_prevents_cpe_update_from_becoming_stable_version(self):
+        record = {
+            "id": "CVE-2026-42304",
+            "affected": [{
+                "affectedData": [{
+                    "vendor": "twisted",
+                    "product": "twisted",
+                    "versions": [{"version": "< 26.4.0rc2", "status": "affected"}],
+                }],
+            }],
+            "configurations": [{
+                "nodes": [{
+                    "cpeMatch": [
+                        {
+                            "vulnerable": True,
+                            "criteria": "cpe:2.3:a:twisted:twisted:*:*:*:*:*:*:*:*",
+                            "versionEndExcluding": "26.4.0",
+                        },
+                        {
+                            "vulnerable": True,
+                            "criteria": "cpe:2.3:a:twisted:twisted:26.4.0:rc1:*:*:*:*:*:*",
+                        },
+                    ],
+                }],
+            }],
+        }
+
+        normalized = normalize_nvd(record)
+        twisted = next(item for item in normalized["affected"] if item["vendor"] == "twisted")
+        expressions = {item["expr"] for item in twisted["ranges"]}
+
+        self.assertIn("<26.4.0rc2", expressions)
+        self.assertIn("==26.4.0-rc1", expressions)
+        self.assertNotIn("==26.4.0", expressions)
 
 
 class TimestampTests(unittest.TestCase):

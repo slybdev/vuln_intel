@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import io
 import json
 import tempfile
@@ -7,7 +9,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from vuln_intel import config, repository_connections, scan_store
+from vuln_intel import config, inventory_integration, repository_connections, scan_store
 from vuln_intel.dashboard import application
 from vuln_intel.scan_matching import (
     component_matches_affected,
@@ -52,7 +54,7 @@ class PackageUrlTests(unittest.TestCase):
         self.assertEqual(findings[0]["component_key"], components[0]["component_key"])
         self.assertEqual(findings[0]["severity"], "HIGH")
 
-    def test_repository_urls_are_limited_to_allowed_hosts_and_safe_schemes(self):
+    def test_repository_urls_are_limited_to_allowed_https_hosts(self):
         self.assertEqual(repository_connections.validate_repository_url("https://github.com/acme/service.git"),
                          "https://github.com/acme/service.git")
         self.assertEqual(repository_connections.provider_for_repository("https://github.com/acme/service"), "github")
@@ -64,19 +66,22 @@ class PackageUrlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             repository_connections.provider_for_repository("https://example.com/acme/service")
 
-    def test_allowlisted_self_hosted_gitlab_supports_http_nested_groups_and_custom_ports(self):
-        with mock.patch.object(config, "REPOSITORY_HOSTS", ["github.com", "gitlab.com", "gitlab.internal"]):
-            repository_url = "http://gitlab.internal:8080/Engineering/Platform/Service.git"
-            self.assertEqual(repository_connections.validate_repository_url(repository_url), repository_url)
-            self.assertEqual(repository_connections.provider_for_repository(repository_url), "gitlab")
-            details = repository_connections.repository_application_from_url(repository_url)
-            repeated = repository_connections.repository_application_from_url(repository_url.lower())
-        self.assertRegex(details["application_id"], r"^gitlab:[a-f0-9]{48}$")
-        self.assertEqual(details["application_id"], repeated["application_id"])
-        self.assertEqual(details["name"], "Engineering/Platform/Service")
-        self.assertEqual(details["repository_url"], "http://gitlab.internal:8080/Engineering/Platform/Service")
-        with self.assertRaisesRegex(ValueError, "Use HTTPS"):
-            repository_connections.validate_repository_url("http://gitlab.com/acme/service")
+    def test_self_hosted_gitlab_url_supports_nested_groups(self):
+        with mock.patch.object(config, "REPOSITORY_HOSTS", ["gitlab.internal.example"]):
+            details = repository_connections.application_from_url(
+                "https://gitlab.internal.example/Division/Platform/Service.git"
+            )
+            self.assertEqual(details["application_id"], "gitlab:gitlab.internal.example:division:platform:service")
+            self.assertEqual(details["name"], "Division/Platform/Service")
+            self.assertEqual(details["repository_url"], "https://gitlab.internal.example/Division/Platform/Service")
+            self.assertEqual(
+                repository_connections.provider_for_repository(details["repository_url"]),
+                "gitlab",
+            )
+            with self.assertRaisesRegex(ValueError, "invalid group or project"):
+                repository_connections.application_from_url(
+                    "https://gitlab.internal.example/Division/%2Fprivate/Service"
+                )
 
     def test_github_repository_url_creates_a_stable_application_identity(self):
         repository = repository_connections.github_application_from_url("https://github.com/Acme/Service.git")
@@ -166,11 +171,13 @@ class PackageUrlTests(unittest.TestCase):
                 mock.patch.object(repository_connections, "_encrypt_secret", return_value=b"encrypted"), \
                 mock.patch.object(repository_connections, "_verify_github_credentials", verify), \
                 mock.patch.object(repository_connections, "_connect", side_effect=connect_after_verification), \
+                mock.patch.object(repository_connections.event_store, "insert_event") as insert_event, \
                 mock.patch.object(repository_connections, "_ensure_schema"):
             result = repository_connections.save_provider_credentials("github", "octocat", "private-token")
 
         self.assertEqual(result["verification"], verification)
         self.assertEqual(cursor.execute.call_count, 2)
+        insert_event.assert_called_once()
 
 
 class InternalVersionMatchingTests(unittest.TestCase):
@@ -210,6 +217,115 @@ class InternalVersionMatchingTests(unittest.TestCase):
         self.assertTrue(component_matches_affected(component, affected))
         self.assertFalse(component_matches_affected(component, {**affected, "package": "other"}))
         self.assertFalse(component_matches_affected(component, {**affected, "ecosystem": "PyPI"}))
+
+    def test_known_cpe_alias_matches_npm_version_ranges(self):
+        affected = {
+            "ecosystem": "cpe",
+            "vendor": "axios",
+            "package": "axios",
+            "cpe_part": "a",
+            "scheme": "generic",
+            "ranges": [
+                {"introduced": "0", "fixed": "0.31.1"},
+                {"introduced": "1.0.0", "fixed": "1.15.1"},
+            ],
+        }
+        vulnerable = normalize_component({"purl": "pkg:npm/axios@1.7.4"})
+        fixed = normalize_component({"purl": "pkg:npm/axios@1.18.1"})
+
+        self.assertTrue(component_matches_affected(vulnerable, affected))
+        self.assertFalse(component_matches_affected(fixed, affected))
+
+    def test_cpe_package_matching_uses_platform_or_vendor_evidence(self):
+        cases = [
+            (
+                "pkg:npm/follow-redirects@1.16.0",
+                {
+                    "vendor": "follow-redirects_project",
+                    "package": "follow-redirects",
+                    "target_sw": "node.js",
+                    "ranges": [{"introduced": "0", "fixed": "1.16.0"}],
+                },
+                False,
+            ),
+            (
+                "pkg:pypi/twisted@26.4.0",
+                {
+                    "vendor": "twisted",
+                    "package": "twisted",
+                    "ranges": [
+                        {"introduced": "0", "fixed": "26.4.0rc2"},
+                        {"introduced": "26.4.0-rc1", "last_affected": "26.4.0-rc1"},
+                    ],
+                },
+                False,
+            ),
+            (
+                "pkg:pypi/twisted@26.4.0rc1",
+                {
+                    "vendor": "twisted",
+                    "package": "twisted",
+                    "ranges": [
+                        {"introduced": "0", "fixed": "26.4.0rc2"},
+                        {"introduced": "26.4.0-rc1", "last_affected": "26.4.0-rc1"},
+                    ],
+                },
+                True,
+            ),
+            (
+                "pkg:pypi/urllib3@2.7.0",
+                {
+                    "vendor": "python",
+                    "package": "urllib3",
+                    "ranges": [{"introduced": "1.23", "fixed": "2.7.0"}],
+                },
+                False,
+            ),
+            (
+                "pkg:npm/fast-uri@3.1.2",
+                {
+                    "vendor": "fast-uri",
+                    "package": "fast-uri",
+                    "ranges": [{"introduced": "0", "fixed": "3.1.2"}],
+                },
+                False,
+            ),
+        ]
+        for purl, cpe_fields, expected in cases:
+            with self.subTest(purl=purl, expected=expected):
+                component = normalize_component({"purl": purl})
+                affected = {
+                    "ecosystem": "cpe",
+                    "cpe_part": "a",
+                    "scheme": "generic",
+                    **cpe_fields,
+                }
+                self.assertIs(component_matches_affected(component, affected), expected)
+
+        conflicting_platform = {
+            "ecosystem": "cpe",
+            "vendor": "python",
+            "package": "follow-redirects",
+            "target_sw": "node.js",
+            "cpe_part": "a",
+            "scheme": "generic",
+            "ranges": [{"introduced": "0", "fixed": "2.0.0"}],
+        }
+        python_package = normalize_component({"purl": "pkg:pypi/follow-redirects@1.0"})
+        self.assertFalse(component_matches_affected(python_package, conflicting_platform))
+
+    def test_unmapped_cpe_product_is_unevaluated_not_silently_ignored(self):
+        component = normalize_component({"purl": "pkg:npm/axios@1.7.4"})
+        affected = {
+            "ecosystem": "cpe",
+            "vendor": "unknown-vendor",
+            "package": "axios",
+            "cpe_part": "a",
+            "scheme": "generic",
+            "ranges": [{"introduced": "1.0.0", "fixed": "1.15.1"}],
+        }
+
+        self.assertIsNone(component_matches_affected(component, affected))
 
 
 class CombinedFindingTests(unittest.TestCase):
@@ -253,6 +369,34 @@ class CombinedFindingTests(unittest.TestCase):
         self.assertEqual(findings[0]["fixed_version"], "4.17.21")
         self.assertEqual(unevaluated, [])
 
+    def test_cpe_advisory_matches_component_without_trivy_finding(self):
+        component = normalize_component({"purl": "pkg:npm/axios@1.7.4"})
+        internal = {
+            "ids": ["CVE-2026-42033"],
+            "severity": "HIGH",
+            "affected": [{
+                "ecosystem": "cpe",
+                "vendor": "axios",
+                "package": "axios",
+                "cpe_part": "a",
+                "scheme": "generic",
+                "ranges": [
+                    {"introduced": "0", "fixed": "0.31.1"},
+                    {"introduced": "1.0.0", "fixed": "1.15.1"},
+                ],
+            }],
+        }
+        with mock.patch.object(scan_store, "resolve_identifier", return_value="CVE-2026-42033"):
+            with mock.patch.object(
+                scan_store, "get_candidate_vulnerabilities", return_value=[("CVE-2026-42033", internal)]
+            ):
+                findings, unevaluated = combine_findings([component], [])
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["sources"], ["vuln_intel"])
+        self.assertEqual(findings[0]["fixed_version"], "1.15.1")
+        self.assertEqual(unevaluated, [])
+
     def test_uncomparable_internal_ranges_are_reported_not_marked_safe(self):
         component = normalize_component({"purl": "pkg:maven/org.example/widget@1.2.3"})
         internal = {
@@ -273,6 +417,50 @@ class CombinedFindingTests(unittest.TestCase):
         self.assertEqual(findings, [])
         self.assertEqual(unevaluated[0]["canonical_id"], "CVE-2025-0001")
 
+
+class FindingDetailsStoreTests(unittest.TestCase):
+    def test_application_finding_details_returns_full_evidence_for_exact_package_version(self):
+        evidence = {"trivy": [{"Title": "Example advisory"}], "vuln_intel": []}
+        row = (
+            "refs/heads/main", "CVE-2026-1234", "CVE-2026-1234", "npm", None, "example-package",
+            "pkg:npm/example-package@1.2.3", "1.2.3", "1.2.4", "HIGH", "active", None, None,
+            ["trivy"], evidence,
+        )
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        cursor = mock.MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        cursor.fetchone.return_value = row
+
+        with mock.patch.object(scan_store, "_connect", return_value=(connection, None)), \
+                mock.patch.object(scan_store, "_ensure_schema"):
+            result = scan_store.get_application_finding_details(
+                "app-1", "refs/heads/main", "CVE-2026-1234", "example-package", "1.2.3"
+            )
+
+        self.assertEqual(result["evidence"], evidence)
+        query, parameters = cursor.execute.call_args.args
+        self.assertIn("AND installed_version = %s", query)
+        self.assertEqual(parameters, (
+            "app-1", "refs/heads/main", "CVE-2026-1234", "CVE-2026-1234",
+            "example-package", "1.2.3",
+        ))
+
+    def test_candidate_query_includes_cpe_product_advisories(self):
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        cursor = mock.MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        cursor.fetchall.return_value = []
+
+        with mock.patch.object(scan_store, "_connect", return_value=(connection, None)), \
+                mock.patch.object(scan_store, "_ensure_schema"):
+            scan_store.get_candidate_vulnerabilities("npm", "axios")
+
+        query, parameters = cursor.execute.call_args.args
+        self.assertIn("OR payload->'affected' @>", query)
+        self.assertEqual(json.loads(parameters[0]), [{"ecosystem": "npm", "package": "axios"}])
+        self.assertEqual(json.loads(parameters[1]), [{"ecosystem": "cpe", "package": "axios"}])
 
 class ScanRequestTests(unittest.TestCase):
     def test_scan_request_requires_full_commit_and_event_id(self):
@@ -301,6 +489,28 @@ class ScanRequestTests(unittest.TestCase):
         self.assertEqual(len(args[3]), 64)
         with self.assertRaises(ValueError):
             request_latest_scan("../bad")
+
+    def test_expired_terminal_scan_queues_failed_inventory_callback(self):
+        cursor = mock.MagicMock()
+        cursor.fetchall.return_value = [
+            ("scan-1", "app-1", 3, "a" * 40, "main", 12, 2, 1, None)
+        ]
+        cursor.fetchone.return_value = None
+        connection = mock.MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with (
+            mock.patch.object(scan_store, "_connect", return_value=(connection, lambda value: value)),
+            mock.patch.object(scan_store, "_ensure_schema"),
+            mock.patch.object(scan_store.event_store, "insert_event"),
+            mock.patch.object(scan_store.inventory_integration, "enqueue_scan_callback") as enqueue_callback,
+        ):
+            result = scan_store.claim_scan()
+
+        self.assertIsNone(result)
+        payload = enqueue_callback.call_args.args[4]
+        self.assertEqual(payload["event"], "scan.failed")
+        self.assertEqual(payload["scan_id"], "scan-1")
+        self.assertEqual(payload["summary"]["components_scanned"], 12)
 
     @mock.patch("vuln_intel.scan_worker.subprocess.run")
     def test_worker_resolves_default_branch_head(self, run):
@@ -352,70 +562,134 @@ class ScanRequestTests(unittest.TestCase):
 
     @mock.patch("vuln_intel.dashboard.scan_service.request_inventory_initial_scan")
     @mock.patch("vuln_intel.dashboard.inventory_integration.register_repository")
-    def test_inventory_registration_queues_initial_scan_and_returns_trigger_credentials(
-            self, register_repository, request_initial):
-        registration = {
-            "repository": {
-                "application_id": "inventory:abc123",
-                "external_inventory_id": "inventory-app-7",
-                "name": "Payments",
-                "repository_url": "http://gitlab.internal/team/payments",
-            },
-            "trigger_url": "http://vuln-intel.local:8000/api/v1/inventory/repositories/inventory:abc123/scans",
-            "ci_token": "ci-token",
-            "callback_secret": "callback-secret",
+    def test_inventory_registration_returns_first_scan_and_pipeline_credentials(
+        self, register_repository, request_initial_scan
+    ):
+        repository = {
+            "application_id": "gitlab:gitlab.internal.example:group:service",
+            "name": "Group/Service",
+            "repository_url": "https://gitlab.internal.example/Group/Service",
         }
-        register_repository.return_value = registration
-        request_initial.return_value = ({"run_id": "scan-1", "status": "queued"}, True)
+        register_repository.return_value = {
+            "repository": repository,
+            "pipeline": {"trigger_url": "https://scanner.example/api/v1/scans", "credential": "ci-secret"},
+            "callback": {"url": "https://inventory.example/callback", "signing_secret": "callback-secret"},
+        }
+        request_initial_scan.return_value = ({"run_id": "scan-1", "status": "queued"}, True)
         payload = {
-            "external_inventory_id": "inventory-app-7",
-            "repository_url": "http://gitlab.internal/team/payments",
-            "callback_url": "http://inventory.local/hooks",
+            "external_inventory_id": "inventory-app-1",
+            "repository_url": repository["repository_url"],
+            "callback_url": "https://inventory.example/callback",
         }
-        with mock.patch.object(config, "INVENTORY_API_TOKEN", "inventory-token"), \
-                mock.patch.object(config, "PUBLIC_API_BASE_URL", "http://vuln-intel.local:8000"), \
-                mock.patch.object(config, "REPOSITORY_ENCRYPTION_KEY", "fernet-key"), \
-                mock.patch.object(config, "INVENTORY_CALLBACK_HOSTS", ["inventory.local"]):
-            denied = self.request("/api/v1/inventory/repositories", "POST", payload)
-            accepted = self.request(
+        with mock.patch.object(config, "INVENTORY_API_TOKEN", "inventory-token"):
+            response = self.request(
                 "/api/v1/inventory/repositories",
                 "POST",
                 payload,
                 {"HTTP_AUTHORIZATION": "Bearer inventory-token"},
             )
-        self.assertEqual(denied["status"], "401 Unauthorized")
-        self.assertEqual(accepted["status"], "202 Accepted")
-        self.assertEqual(json.loads(accepted["body"])["ci_token"], "ci-token")
-        self.assertEqual(json.loads(accepted["body"])["callback_secret"], "callback-secret")
-        register_repository.assert_called_once_with(payload)
-        request_initial.assert_called_once_with("inventory:abc123", "inventory-app-7",
-                                                "http://gitlab.internal/team/payments")
+        self.assertEqual(response["status"], "202 Accepted")
+        body = json.loads(response["body"])
+        self.assertEqual(body["repository"], repository)
+        self.assertEqual(body["initial_scan"]["run_id"], "scan-1")
+        self.assertEqual(body["pipeline"]["credential"], "ci-secret")
+        self.assertEqual(body["callback"]["signing_secret"], "callback-secret")
+        request_initial_scan.assert_called_once_with(repository["application_id"], "inventory-app-1")
 
-    @mock.patch("vuln_intel.dashboard.inventory_integration.authenticate_ci_credential", return_value=True)
+    @mock.patch("vuln_intel.dashboard.inventory_integration.register_repository")
+    def test_inventory_registration_rejects_missing_bearer_authentication(self, register_repository):
+        with mock.patch.object(config, "INVENTORY_API_TOKEN", "inventory-token"):
+            response = self.request(
+                "/api/v1/inventory/repositories",
+                "POST",
+                {"external_inventory_id": "inventory-app-1"},
+            )
+        self.assertEqual(response["status"], "401 Unauthorized")
+        register_repository.assert_not_called()
+
     @mock.patch("vuln_intel.dashboard.scan_service.request_scan")
-    def test_inventory_pipeline_trigger_uses_app_scoped_token_and_path_id(self, request_scan, _authenticate):
+    @mock.patch("vuln_intel.dashboard.inventory_integration.authenticate_pipeline", return_value=True)
+    def test_inventory_pipeline_trigger_queues_the_requested_commit(self, authenticate_pipeline, request_scan):
         request_scan.return_value = ({"run_id": "scan-2", "status": "queued"}, True)
-        payload = {"commit_sha": "c" * 40, "ref": "refs/heads/main", "event_id": "pipeline-42"}
+        payload = {
+            "commit_sha": "c" * 40,
+            "ref": "feature/scan",
+            "event_id": "pipeline-42",
+        }
         response = self.request(
-            "/api/v1/inventory/repositories/inventory:abc123/scans",
+            "/api/v1/inventory/repositories/gitlab:gitlab.internal.example:group:service/scans",
             "POST",
             payload,
-            {"HTTP_AUTHORIZATION": "Bearer app-token"},
+            {"HTTP_AUTHORIZATION": "Bearer ci-secret"},
         )
         self.assertEqual(response["status"], "202 Accepted")
-        request_scan.assert_called_once_with({**payload, "application_id": "inventory:abc123"})
-
-    @mock.patch("vuln_intel.dashboard.inventory_integration.authenticate_ci_credential", return_value=True)
-    @mock.patch("vuln_intel.dashboard.scan_store.get_scan_run")
-    def test_inventory_scan_status_is_scoped_to_authenticated_application(self, get_run, _authenticate):
-        run_id = str(uuid.uuid4())
-        get_run.return_value = {"run_id": run_id, "application_id": "inventory:abc123", "status": "succeeded"}
-        response = self.request(
-            f"/api/v1/inventory/repositories/inventory:abc123/scans/{run_id}",
-            headers={"HTTP_AUTHORIZATION": "Bearer app-token"},
+        request_scan.assert_called_once_with({
+            "application_id": "gitlab:gitlab.internal.example:group:service",
+            **payload,
+        })
+        authenticate_pipeline.assert_called_once_with(
+            "gitlab:gitlab.internal.example:group:service", "ci-secret"
         )
+
+    @mock.patch("vuln_intel.dashboard.inventory_integration.rotate_pipeline_credential")
+    def test_inventory_can_rotate_pipeline_credential(self, rotate_credential):
+        rotate_credential.return_value = {
+            "trigger_url": "https://scanner.example/scans",
+            "credential": "new-secret",
+        }
+        with mock.patch.object(config, "INVENTORY_API_TOKEN", "inventory-token"):
+            response = self.request(
+                "/api/v1/inventory/repositories/gitlab:gitlab.internal.example:group:service/credential",
+                "POST",
+                headers={"HTTP_AUTHORIZATION": "Bearer inventory-token"},
+            )
         self.assertEqual(response["status"], "200 OK")
-        self.assertEqual(json.loads(response["body"])["status"], "succeeded")
+        self.assertEqual(json.loads(response["body"])["pipeline"]["credential"], "new-secret")
+        rotate_credential.assert_called_once_with("gitlab:gitlab.internal.example:group:service")
+
+    def test_inventory_callback_requires_https_and_an_allowlisted_host(self):
+        with mock.patch.object(config, "INVENTORY_CALLBACK_HOSTS", ["inventory.example"]):
+            self.assertEqual(
+                inventory_integration.validate_callback_url("https://inventory.example/hooks/scan"),
+                "https://inventory.example/hooks/scan",
+            )
+            for value in (
+                "http://inventory.example/hooks/scan",
+                "https://unapproved.example/hooks/scan",
+                "https://inventory.example/hooks/scan?secret=value",
+            ):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    inventory_integration.validate_callback_url(value)
+
+    @mock.patch("vuln_intel.inventory_integration.mark_callback_delivered")
+    @mock.patch("vuln_intel.inventory_integration.repository_connections._decrypt_secret", return_value="signing-secret")
+    @mock.patch("vuln_intel.inventory_integration.claim_callback_delivery")
+    @mock.patch("vuln_intel.inventory_integration.urllib.request.build_opener")
+    def test_inventory_callback_is_signed_and_marked_delivered(
+        self, build_opener, claim_delivery, decrypt_secret, mark_delivered
+    ):
+        claim_delivery.return_value = {
+            "event_id": "event-1",
+            "callback_url": "https://inventory.example/callback",
+            "encrypted_callback_secret": b"encrypted",
+            "payload": {"event_id": "event-1", "event": "scan.completed"},
+            "attempts": 1,
+        }
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        opener = mock.MagicMock()
+        opener.open.return_value = response
+        build_opener.return_value = opener
+        with mock.patch.object(config, "INVENTORY_CALLBACK_HOSTS", ["inventory.example"]):
+            self.assertTrue(inventory_integration.deliver_callback_once())
+
+        request = opener.open.call_args.args[0]
+        body = request.data
+        expected = hmac.new(b"signing-secret", body, hashlib.sha256).hexdigest()
+        self.assertEqual(request.get_header("X-vuln-signature"), f"sha256={expected}")
+        self.assertEqual(request.get_header("X-vuln-event-id"), "event-1")
+        mark_delivered.assert_called_once_with("event-1")
 
     @mock.patch("vuln_intel.dashboard.scan_store.list_scan_runs", return_value=[])
     def test_scan_list_api_accepts_optional_application_filter(self, list_scan_runs):
@@ -450,23 +724,13 @@ class ScanRequestTests(unittest.TestCase):
 
     @mock.patch("vuln_intel.dashboard.scan_service.request_latest_scan")
     @mock.patch("vuln_intel.dashboard.repository_connections.save_repository_connection")
-    def test_repository_url_scan_adds_configured_gitlab_repository(self, save_connection, request_latest):
-        details = repository_connections.repository_application_from_url("https://gitlab.com/acme/service")
-        repository = {
-            "application_id": details["application_id"],
-            "name": details["name"],
-            "repository_url": details["repository_url"],
-        }
-        save_connection.return_value = repository
-        request_latest.return_value = ({"run_id": "scan-2", "status": "queued"}, True)
+    def test_github_url_scan_rejects_non_github_urls(self, save_connection, request_latest):
         response = self.request(
             "/api/repositories/scan", "POST", {"repository_url": "https://gitlab.com/acme/service"}
         )
-        self.assertEqual(response["status"], "202 Accepted")
-        save_connection.assert_called_once_with(
-            details["application_id"], details["repository_url"], details["name"]
-        )
-        request_latest.assert_called_once_with(details["application_id"])
+        self.assertEqual(response["status"], "400 Bad Request")
+        save_connection.assert_not_called()
+        request_latest.assert_not_called()
 
     @mock.patch("vuln_intel.dashboard.scan_service.request_latest_scan")
     @mock.patch("vuln_intel.dashboard.repository_connections.save_repository_connection")

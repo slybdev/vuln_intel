@@ -221,9 +221,10 @@ def process_scan(run: dict):
 
 
 def run_worker_once() -> bool:
+    callback_processed = inventory_integration.deliver_callback_once()
     run = scan_store.claim_scan(config.SCAN_MAX_ATTEMPTS)
     if not run:
-        return False
+        return callback_processed
     try:
         process_scan(run)
     except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError, psycopg.Error) as exc:
@@ -242,9 +243,7 @@ def main():
     log.info("Trivy worker started (version %s).", config.TRIVY_VERSION)
     try:
         while True:
-            scan_work = run_worker_once()
-            callback_work = inventory_integration.deliver_callback_once()
-            if not scan_work and not callback_work:
+            if not run_worker_once():
                 time.sleep(config.SCAN_WORKER_POLL_SECONDS)
     except KeyboardInterrupt:
         log.info("Trivy worker stopped.")

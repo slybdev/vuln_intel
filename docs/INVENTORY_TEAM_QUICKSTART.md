@@ -2,6 +2,9 @@
 
 This guide is for the team connecting an external application inventory to Vuln Intel. The flow is:
 
+For the detailed developer contract, including exact endpoint behavior and result-count
+definitions, see [INVENTORY_API_DEVELOPER_GUIDE.md](./INVENTORY_API_DEVELOPER_GUIDE.md).
+
 1. When an application with a GitHub or GitLab repository is added to the inventory, the inventory
    registers it with Vuln Intel.
 2. Vuln Intel queues an initial scan and later posts the result to the inventory callback.

@@ -21,8 +21,5 @@ vuln-intel-dashboard = "vuln_intel.dashboard:main"
 [tool.setuptools.packages.find]
 include = ["vuln_intel*"]
 
-[tool.setuptools.package-data]
-vuln_intel = ["web/*.html", "web/*.css", "web/*.js"]
-
 [tool.ruff]
 line-length = 120

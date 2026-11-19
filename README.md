@@ -1,8 +1,10 @@
-# vuln-intel
+# Tactical Ops — Vulnerability Intelligence
 
 Daily vulnerability intelligence pipeline: pulls the latest changes from **NVD, OSV, GitHub Security
 Advisories, CISA KEV and EPSS**, preserves raw source records, normalizes and deduplicates them, and
-stores the standardized records and source contributions in PostgreSQL.
+stores the standardized records and source contributions in PostgreSQL. The Tactical Ops React UI
+provides the overview, repository scanning, vulnerability intelligence, asset inventory, security
+logs, and scheduled feed pages.
 
 Python 3.9+, PostgreSQL 16+, Docker Compose.
 
@@ -37,30 +39,34 @@ responses, reports, logs, and collection watermarks remain under `vuln_data/`.
 Without `VULN_DATABASE_URL`, the program retains its legacy JSON storage mode for local tests and
 backward compatibility.
 
-Start the local, read-only dashboard in a second terminal:
+Start the vulnerability API in a second terminal:
 
 ```powershell
 $env:VULN_DATABASE_URL = "postgresql://vulnintel:vulnintel@127.0.0.1:5432/vulnintel"
-vuln-intel-dashboard
+python -m vuln_intel.dashboard --host 127.0.0.1 --port 8081
 ```
 
-Open <http://127.0.0.1:8000>. The Overview shows key risk metrics, a severity donut with counts and
-percentages, a rolling 12-month publication column chart with severity details, source coverage, and
-the priority watchlist. A searchable vulnerability list with record details is available in its own
-view. On desktop, use the shield button to expand or collapse the sidebar; on mobile, the navigation
-becomes a fixed bottom tab bar. The dashboard uses a flat white-and-red theme without backdrop blur or
-refraction effects. The server binds to localhost by default.
+Start the Tactical Ops UI from the project root:
 
-Build the dashboard container image from the project root:
+```powershell
+npx --yes bun install
+npx --yes bun run dev
+```
+
+Open <http://127.0.0.1:3000>. The Vite development server proxies API requests to the local Python
+service on port `8081`. The **Overview**, **Applications**, **Application Scans**, **Intelligence**,
+**Asset Inventory**, **Security Logs**, and **Feed Schedule** pages use the PostgreSQL-backed API.
+
+Build the combined production image from the project root:
 
 ```bash
-docker build -t vuln-intel-dashboard .
+docker build -t vuln-intel .
 ```
 
-The image serves the dashboard on port `8000`. Supply `VULN_DATABASE_URL` and any required
-integration secrets at runtime; they are not copied into the image. From inside a container,
-`127.0.0.1` refers to that container, so configure a database hostname reachable on its Docker
-network.
+The image serves the built Tactical Ops UI and API on port `8000`. Supply `VULN_DATABASE_URL` and
+any required integration secrets at runtime; they are not copied into the image. From inside a
+container, `127.0.0.1` refers to that container, so configure a database hostname reachable on its
+Docker network.
 
 ## Application repository scans
 
@@ -159,6 +165,8 @@ python3 main.py --since 2026-11-01T00:00:00Z   # backfill window start
 
 ## Documentation
 
+- [BACKEND_SETUP.md](BACKEND_SETUP.md): local Tactical Ops UI and API startup
+- [docs/INVENTORY_API_DEVELOPER_GUIDE.md](docs/INVENTORY_API_DEVELOPER_GUIDE.md): simple API handoff for the external inventory team
 - [docs/EXTERNAL_INVENTORY_API.md](docs/EXTERNAL_INVENTORY_API.md): repository registration, GitLab CI triggers, signed result callbacks, and credential operations
 - [docs/INVENTORY_TEAM_QUICKSTART.md](docs/INVENTORY_TEAM_QUICKSTART.md): practical integration steps for the external inventory team
 - [docs/APPLICATION_END_TO_END.md](docs/APPLICATION_END_TO_END.md): end-to-end feed ingestion, repository scanning, inventory registration, and callback flow
@@ -174,7 +182,7 @@ vuln_intel/
   collectors/                   nvd, osv, ghsa, kev, epss
   normalization/                mappers/, schema, ecosystems, versions, cvss, resolver, merge
   reporting.py  pipeline.py  cli.py  dashboard.py  dashboard_data.py
-  web/                          dashboard HTML, CSS, JavaScript
+src/                            Tactical Ops React UI
 tests/                          unit + end-to-end tests (no network needed)
 docs/
 ```

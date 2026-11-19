@@ -7,3 +7,8 @@ __pycache__
 *.py[cod]
 vuln_data
 tests
+node_modules
+dist
+coverage
+*.log
+*.env

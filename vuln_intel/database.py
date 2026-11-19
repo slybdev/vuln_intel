@@ -56,6 +56,18 @@ _SCHEMA = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS inventory_integrations (
+        external_inventory_id TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL UNIQUE,
+        callback_url TEXT NOT NULL,
+        encrypted_pipeline_token BYTEA NOT NULL,
+        pipeline_token_hash TEXT NOT NULL,
+        encrypted_callback_secret BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
     ALTER TABLE repository_connections ADD COLUMN IF NOT EXISTS encrypted_username BYTEA
     """,
     """
@@ -66,18 +78,6 @@ _SCHEMA = (
         provider TEXT PRIMARY KEY CHECK (provider IN ('github', 'gitlab')),
         encrypted_username BYTEA NOT NULL,
         encrypted_password BYTEA NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS inventory_integrations (
-        external_inventory_id TEXT PRIMARY KEY,
-        application_id TEXT NOT NULL UNIQUE REFERENCES repository_connections(application_id) ON DELETE CASCADE,
-        callback_url TEXT NOT NULL,
-        encrypted_ci_token BYTEA NOT NULL,
-        ci_token_hash BYTEA NOT NULL,
-        encrypted_callback_secret BYTEA NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
@@ -125,23 +125,21 @@ _SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS inventory_callback_outbox (
         event_id TEXT PRIMARY KEY,
-        scan_run_id TEXT NOT NULL REFERENCES scan_runs(run_id) ON DELETE CASCADE,
-        event_type TEXT NOT NULL CHECK (event_type IN ('scan.completed', 'scan.failed')),
+        run_id TEXT NOT NULL UNIQUE REFERENCES scan_runs(run_id) ON DELETE CASCADE,
+        application_id TEXT NOT NULL,
         callback_url TEXT NOT NULL,
-        encrypted_signing_secret BYTEA NOT NULL,
+        encrypted_callback_secret BYTEA NOT NULL,
         payload JSONB NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         delivered_at TIMESTAMPTZ,
         last_error TEXT,
-        UNIQUE (scan_run_id, event_type)
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
     """
     CREATE INDEX IF NOT EXISTS inventory_callback_outbox_pending_idx
-    ON inventory_callback_outbox(available_at, created_at)
-    WHERE delivered_at IS NULL
+    ON inventory_callback_outbox(available_at, created_at) WHERE delivered_at IS NULL
     """,
     """
     CREATE TABLE IF NOT EXISTS scan_components (
@@ -236,6 +234,86 @@ _SCHEMA = (
     CREATE INDEX IF NOT EXISTS application_findings_current_idx
     ON application_findings(application_id, ref, status, severity)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS assets (
+        asset_id TEXT PRIMARY KEY,
+        asset_type TEXT NOT NULL CHECK (asset_type IN (
+            'endpoint', 'server', 'network_device', 'operating_system',
+            'third_party_application', 'cloud_resource'
+        )),
+        name TEXT NOT NULL,
+        identifier TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'maintenance', 'retired', 'unknown')),
+        environment TEXT NOT NULL DEFAULT '',
+        owner TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        vendor TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        operating_system TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT '',
+        ip_address TEXT NOT NULL DEFAULT '',
+        mac_address TEXT NOT NULL DEFAULT '',
+        criticality TEXT NOT NULL CHECK (criticality IN ('critical', 'high', 'medium', 'low', 'unknown')),
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS assets_type_identifier_unique_idx
+    ON assets(asset_type, lower(identifier))
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS assets_inventory_order_idx
+    ON assets(updated_at DESC, asset_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS security_events (
+        event_id BIGSERIAL PRIMARY KEY,
+        event_key TEXT UNIQUE,
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        severity TEXT NOT NULL CHECK (severity IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO')),
+        category TEXT NOT NULL CHECK (category IN (
+            'asset', 'repository', 'scan', 'finding', 'feed', 'settings', 'system'
+        )),
+        event_type TEXT NOT NULL,
+        source TEXT NOT NULL,
+        message TEXT NOT NULL,
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL CHECK (outcome IN (
+            'info', 'queued', 'running', 'succeeded', 'failed', 'detected',
+            'resolved', 'updated', 'deleted', 'partial'
+        )),
+        actor TEXT NOT NULL DEFAULT 'system',
+        details JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS feed_update_schedule (
+        schedule_id SMALLINT PRIMARY KEY CHECK (schedule_id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        run_time TIME NOT NULL,
+        next_run_at TIMESTAMPTZ,
+        last_run_at TIMESTAMPTZ,
+        last_run_status TEXT CHECK (last_run_status IN ('running', 'succeeded', 'partial', 'failed')),
+        last_run_error TEXT,
+        last_run_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS security_events_occurred_idx
+    ON security_events(occurred_at DESC, event_id DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS security_events_category_idx
+    ON security_events(category, occurred_at DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS security_events_severity_idx
+    ON security_events(severity, occurred_at DESC)
+    """,
 )
 
 
@@ -318,7 +396,7 @@ def load_snapshot():
             _baseline(vulnerabilities, contributions))
 
 
-def save_snapshot(db, contributions, run_id=None, processed_runs=(), baseline=None):
+def save_snapshot(db, contributions, run_id=None, processed_runs=(), baseline=None, audit_event=None):
     conn, Jsonb = _connect()
     current = db["vulnerabilities"]
     baseline = baseline or {"vulnerabilities": {}, "contributions": {}, "identifiers": {}}
@@ -394,5 +472,25 @@ def save_snapshot(db, contributions, run_id=None, processed_runs=(), baseline=No
                 cur.executemany(
                     "INSERT INTO processed_runs (run_id) VALUES (%s) ON CONFLICT DO NOTHING",
                     [(processed_run,) for processed_run in processed_runs],
+                )
+            if audit_event:
+                cur.execute(
+                    """
+                    INSERT INTO security_events
+                        (event_key, severity, category, event_type, source, message, target_type,
+                         target_id, outcome, actor, details)
+                    VALUES (%s, %s, 'feed', %s, %s, %s, 'feed_run', %s, %s, 'vulnerability_pipeline', %s)
+                    ON CONFLICT (event_key) DO NOTHING
+                    """,
+                    (
+                        audit_event["event_key"],
+                        audit_event["severity"],
+                        audit_event["event_type"],
+                        audit_event["source"],
+                        audit_event["message"],
+                        audit_event["target_id"],
+                        audit_event["outcome"],
+                        Jsonb(audit_event["details"]),
+                    ),
                 )
     return _baseline(current, contributions)

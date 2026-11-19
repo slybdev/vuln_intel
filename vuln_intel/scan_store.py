@@ -5,6 +5,7 @@ import hashlib
 import json
 import uuid
 
+from vuln_intel import event_store, inventory_integration
 from vuln_intel.database import _connect, _ensure_schema
 
 
@@ -16,9 +17,15 @@ def _row_dict(row, columns):
     return dict(zip(columns, row))
 
 
-def enqueue_scan(application_id: str, commit_sha: str, ref: str, idempotency_key: str):
+def enqueue_scan(
+    application_id: str,
+    commit_sha: str,
+    ref: str,
+    idempotency_key: str,
+    actor="system",
+):
     run_id = str(uuid.uuid4())
-    conn, _ = _connect()
+    conn, Jsonb = _connect()
     with conn:
         with conn.cursor() as cur:
             _ensure_schema(cur)
@@ -44,6 +51,22 @@ def enqueue_scan(application_id: str, commit_sha: str, ref: str, idempotency_key
                 row = cur.fetchone()
                 if row is None or row[1:4] != (application_id, commit_sha, ref):
                     raise IdempotencyConflict("Idempotency key was already used for a different scan request.")
+            if created:
+                event_store.insert_event(
+                    cur,
+                    Jsonb,
+                    severity="INFO",
+                    category="scan",
+                    event_type="scan.queued",
+                    source="Scan queue",
+                    message=f"Scan queued for {application_id}",
+                    target_type="repository",
+                    target_id=application_id,
+                    outcome="queued",
+                    actor=actor,
+                    details={"run_id": row[0], "ref": ref, "commit_sha": commit_sha},
+                    event_key=f"scan:{row[0]}:queued",
+                )
     return _row_dict(row, ("run_id", "application_id", "commit_sha", "ref", "status", "requested_at")), created
 
 
@@ -59,21 +82,48 @@ def claim_scan(max_attempts: int = 3):
                 SET status = 'failed', completed_at = now(), lease_until = NULL, lease_token = NULL,
                     error = coalesce(error, 'Worker lease expired after the maximum attempts.')
                 WHERE status = 'running' AND lease_until < now() AND attempts >= %s
-                RETURNING status, run_id, application_id, commit_sha, ref, requested_at, started_at, completed_at,
-                          component_count, finding_count, unevaluated_count, error
+                RETURNING run_id, application_id, attempts, commit_sha, ref, component_count,
+                          finding_count, unevaluated_count, completed_at
                 """,
                 (max_attempts,),
             )
-            failed_runs = cur.fetchall()
-            from vuln_intel.inventory_integration import enqueue_scan_callback
-            for failed in failed_runs:
-                enqueue_scan_callback(
-                    cur, Jsonb,
-                    dict(zip(("status", "run_id", "application_id", "commit_sha", "ref", "requested_at", "started_at",
-                              "completed_at", "component_count", "finding_count", "unevaluated_count", "error"),
-                             failed)),
-                    "scan.failed",
-                    error=failed[-1],
+            expired = cur.fetchall()
+            for (run_id, application_id, attempts, commit_sha, ref, component_count, finding_count,
+                 unevaluated_count, completed_at) in expired:
+                event_store.insert_event(
+                    cur,
+                    Jsonb,
+                    severity="HIGH",
+                    category="scan",
+                    event_type="scan.failed",
+                    source="Scan worker",
+                    message=f"Scan failed after exhausting retries for {application_id}",
+                    target_type="repository",
+                    target_id=application_id,
+                    outcome="failed",
+                    actor="scan_worker",
+                    details={"run_id": run_id, "attempts": attempts},
+                    event_key=f"scan:{run_id}:failed:lease-expired",
+                )
+                inventory_integration.enqueue_scan_callback(
+                    cur,
+                    Jsonb,
+                    run_id,
+                    application_id,
+                    {
+                        "event": "scan.failed",
+                        "application_id": application_id,
+                        "scan_id": run_id,
+                        "commit_sha": commit_sha,
+                        "ref": ref,
+                        "status": "failed",
+                        "completed_at": completed_at.isoformat() if completed_at else None,
+                        "summary": {
+                            "components_scanned": component_count,
+                            "findings": finding_count,
+                            "unevaluated_matches": unevaluated_count,
+                        },
+                    },
                 )
             cur.execute(
                 """
@@ -103,6 +153,22 @@ def claim_scan(max_attempts: int = 3):
                 (max_attempts, lease_token),
             )
             row = cur.fetchone()
+            if row:
+                event_store.insert_event(
+                    cur,
+                    Jsonb,
+                    severity="INFO",
+                    category="scan",
+                    event_type="scan.started",
+                    source="Scan worker",
+                    message=f"Scan started for {row[1]}",
+                    target_type="repository",
+                    target_id=row[1],
+                    outcome="running",
+                    actor="scan_worker",
+                    details={"run_id": row[0], "attempts": row[4]},
+                    event_key=f"scan:{row[0]}:started:{row[4]}",
+                )
     return _row_dict(row, ("run_id", "application_id", "commit_sha", "ref", "attempts", "lease_token")) if row else None
 
 
@@ -121,22 +187,56 @@ def retry_or_fail_scan(run_id: str, lease_token: str, error: str, max_attempts: 
                     completed_at = CASE WHEN attempts < %s THEN NULL ELSE now() END,
                     error = %s
                 WHERE run_id = %s AND lease_token = %s AND status = 'running'
-                RETURNING status, run_id, application_id, commit_sha, ref, requested_at, started_at, completed_at,
-                          component_count, finding_count, unevaluated_count, error
+                RETURNING status, application_id, attempts, commit_sha, ref, component_count,
+                          finding_count, unevaluated_count, completed_at
                 """,
                 (max_attempts, max_attempts, error[:2000], run_id, lease_token),
             )
-            failed = cur.fetchone()
-            if failed and failed[0] == "failed":
-                from vuln_intel.inventory_integration import enqueue_scan_callback
-                enqueue_scan_callback(
-                    cur, Jsonb,
-                    dict(zip(("status", "run_id", "application_id", "commit_sha", "ref", "requested_at",
-                              "started_at", "completed_at", "component_count", "finding_count",
-                              "unevaluated_count", "error"), failed)),
-                    "scan.failed",
-                    error=failed[-1],
+            row = cur.fetchone()
+            if row:
+                status, application_id, attempts, commit_sha, ref, component_count, finding_count, \
+                    unevaluated_count, completed_at = row
+                failed = status == "failed"
+                event_store.insert_event(
+                    cur,
+                    Jsonb,
+                    severity="HIGH" if failed else "MEDIUM",
+                    category="scan",
+                    event_type="scan.failed" if failed else "scan.retry_scheduled",
+                    source="Scan worker",
+                    message=(
+                        f"Scan failed for {application_id}"
+                        if failed
+                        else f"Scan attempt failed; retry scheduled for {application_id}"
+                    ),
+                    target_type="repository",
+                    target_id=application_id,
+                    outcome="failed" if failed else "queued",
+                    actor="scan_worker",
+                    details={"run_id": run_id, "attempts": attempts},
+                    event_key=f"scan:{run_id}:attempt-failed:{attempts}",
                 )
+                if failed:
+                    inventory_integration.enqueue_scan_callback(
+                        cur,
+                        Jsonb,
+                        run_id,
+                        application_id,
+                        {
+                            "event": "scan.failed",
+                            "application_id": application_id,
+                            "scan_id": run_id,
+                            "commit_sha": commit_sha,
+                            "ref": ref,
+                            "status": status,
+                            "completed_at": completed_at.isoformat() if completed_at else None,
+                            "summary": {
+                                "components_scanned": component_count,
+                                "findings": finding_count,
+                                "unevaluated_matches": unevaluated_count,
+                            },
+                        },
+                    )
 
 
 def _finding_key(component_key: str, vulnerability_key: str) -> str:
@@ -168,16 +268,19 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
     with conn:
         with conn.cursor() as cur:
             _ensure_schema(cur)
+            cur.execute("SELECT status, lease_token FROM scan_runs WHERE run_id = %s FOR UPDATE", (run_id,))
+            lease = cur.fetchone()
+            if not lease or lease != ("running", lease_token):
+                raise RuntimeError("Scan lease expired before results could be committed.")
             cur.execute(
                 """
-                SELECT status, lease_token, commit_sha, requested_at, started_at
-                FROM scan_runs WHERE run_id = %s FOR UPDATE
+                SELECT component_key, vulnerability_key
+                FROM application_findings
+                WHERE application_id = %s AND ref = %s AND status = 'active'
                 """,
-                (run_id,),
+                (application_id, ref),
             )
-            lease = cur.fetchone()
-            if not lease or lease[:2] != ("running", lease_token):
-                raise RuntimeError("Scan lease expired before results could be committed.")
+            previously_active = set(cur.fetchall())
             cur.execute("DELETE FROM scan_components WHERE run_id = %s", (run_id,))
             if components:
                 cur.executemany(
@@ -193,7 +296,6 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
                     ],
                 )
             persisted_findings = []
-            callback_findings = []
             for finding in findings:
                 component = component_map.get(finding["component_key"])
                 if not component:
@@ -201,16 +303,6 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
                 canonical_id = finding.get("canonical_id")
                 vulnerability_id = finding["vulnerability_id"]
                 vulnerability_key = canonical_id or vulnerability_id.upper()
-                callback_findings.append({
-                    "vulnerability_id": vulnerability_id,
-                    "canonical_id": canonical_id,
-                    "ecosystem": component["ecosystem"],
-                    "package_name": component["package_name"],
-                    "installed_version": component["version"],
-                    "fixed_version": finding.get("fixed_version"),
-                    "severity": finding.get("severity", "UNKNOWN"),
-                    "sources": sorted(set(finding.get("sources") or [])),
-                })
                 persisted_findings.append((
                     run_id,
                     _finding_key(component["component_key"], vulnerability_key),
@@ -227,6 +319,18 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
                     Jsonb(sorted(set(finding.get("sources") or []))),
                     Jsonb(finding.get("evidence") or {}),
                 ))
+            newly_detected = [
+                row for row in persisted_findings
+                if (row[2], row[3] or row[4].upper()) not in previously_active
+            ]
+            severity_counts = {
+                severity: sum(1 for row in persisted_findings if row[11] == severity)
+                for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+            }
+            new_severity_counts = {
+                severity: sum(1 for row in newly_detected if row[11] == severity)
+                for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+            }
             if persisted_findings:
                 cur.executemany(
                     """
@@ -303,6 +407,73 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
                 """,
                 (run_id, application_id, ref, run_id, run_id),
             )
+            resolved_count = cur.rowcount
+            cur.execute(
+                """
+                INSERT INTO security_events
+                    (event_key, severity, category, event_type, source, message, target_type,
+                     target_id, outcome, actor, details)
+                VALUES (%s, %s, 'scan', 'scan.completed', 'Trivy scan worker', %s,
+                        'repository', %s, 'succeeded', 'scan_worker', %s)
+                ON CONFLICT (event_key) DO NOTHING
+                """,
+                (
+                    f"scan:{run_id}:completed",
+                    "HIGH" if severity_counts["CRITICAL"] or severity_counts["HIGH"] else "INFO",
+                    f"Scan completed for {application_id}: {len(components)} packages, "
+                    f"{len(persisted_findings)} matched findings",
+                    application_id,
+                    Jsonb({
+                        "run_id": run_id,
+                        "component_count": len(components),
+                        "finding_count": len(persisted_findings),
+                        "critical_findings": severity_counts["CRITICAL"],
+                        "high_findings": severity_counts["HIGH"],
+                        "medium_findings": severity_counts["MEDIUM"],
+                        "low_findings": severity_counts["LOW"],
+                        "unevaluated_count": len(evaluations),
+                        "resolved_count": resolved_count,
+                    }),
+                ),
+            )
+            if newly_detected:
+                top_severity = next(
+                    severity for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
+                    if new_severity_counts[severity]
+                )
+                cur.execute(
+                    """
+                    INSERT INTO security_events
+                        (event_key, severity, category, event_type, source, message, target_type,
+                         target_id, outcome, actor, details)
+                    VALUES (%s, %s, 'finding', 'finding.detected', 'Trivy scan worker', %s,
+                            'repository', %s, 'detected', 'scan_worker', %s)
+                    ON CONFLICT (event_key) DO NOTHING
+                    """,
+                    (
+                        f"scan:{run_id}:findings-detected",
+                        top_severity,
+                        f"Scan detected {len(newly_detected)} new active findings for {application_id}",
+                        application_id,
+                        Jsonb(new_severity_counts),
+                    ),
+                )
+            if resolved_count:
+                event_store.insert_event(
+                    cur,
+                    Jsonb,
+                    severity="INFO",
+                    category="finding",
+                    event_type="finding.resolved",
+                    source="Trivy scan worker",
+                    message=f"Scan resolved {resolved_count} findings for {application_id}",
+                    target_type="repository",
+                    target_id=application_id,
+                    outcome="resolved",
+                    actor="scan_worker",
+                    details={"run_id": run_id, "resolved_count": resolved_count},
+                    event_key=f"scan:{run_id}:findings-resolved",
+                )
             cur.execute(
                 """
                 UPDATE scan_runs
@@ -311,38 +482,52 @@ def save_scan_result(run_id: str, lease_token: str, application_id: str, ref: st
                     report_sha256 = %s, sbom_sha256 = %s, component_count = %s, finding_count = %s,
                     unevaluated_count = %s, inventory_name = %s
                 WHERE run_id = %s AND status = 'running' AND lease_token = %s
-                RETURNING completed_at
                 """,
                 (scanner_version, scanner_db_updated, report_path, sbom_path, report_sha256, sbom_sha256,
                  len(components), len(persisted_findings), len(evaluations), inventory_name, run_id, lease_token),
             )
+            severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+            top_findings = sorted(persisted_findings, key=lambda item: severity_order.get(item[11], 4))[:10]
+            cur.execute("SELECT commit_sha, completed_at FROM scan_runs WHERE run_id = %s", (run_id,))
             completed = cur.fetchone()
-            if not completed:
-                raise RuntimeError("Scan lease expired before results could be committed.")
-            from vuln_intel.inventory_integration import enqueue_scan_callback
-            enqueue_scan_callback(
-                cur, Jsonb,
+            inventory_integration.enqueue_scan_callback(
+                cur,
+                Jsonb,
+                run_id,
+                application_id,
                 {
-                    "run_id": run_id,
+                    "event": "scan.completed",
                     "application_id": application_id,
-                    "commit_sha": lease[2],
+                    "scan_id": run_id,
+                    "commit_sha": completed[0],
                     "ref": ref,
                     "status": "succeeded",
-                    "requested_at": lease[3],
-                    "started_at": lease[4],
-                    "completed_at": completed[0],
-                    "component_count": len(components),
-                    "finding_count": len(persisted_findings),
-                    "unevaluated_count": len(evaluations),
+                    "completed_at": completed[1].isoformat() if completed[1] else None,
+                    "summary": {
+                        "components_scanned": len(components),
+                        "findings": len(persisted_findings),
+                        "unevaluated_matches": len(evaluations),
+                        "severity_counts": severity_counts,
+                        "top_findings": [
+                            {
+                                "vulnerability_id": item[4],
+                                "package": item[7],
+                                "installed_version": item[9],
+                                "fixed_version": item[10],
+                                "severity": item[11],
+                                "sources": item[12],
+                            }
+                            for item in top_findings
+                        ],
+                    },
                 },
-                "scan.completed",
-                findings=callback_findings,
             )
 
 
 def get_candidate_vulnerabilities(ecosystem: str, package_name: str):
     conn, _ = _connect()
     containment = json.dumps([{"ecosystem": ecosystem, "package": package_name}])
+    cpe_containment = json.dumps([{"ecosystem": "cpe", "package": package_name}])
     with conn:
         with conn.cursor() as cur:
             _ensure_schema(cur)
@@ -351,8 +536,9 @@ def get_candidate_vulnerabilities(ecosystem: str, package_name: str):
                 SELECT canonical_id, payload
                 FROM vulnerabilities
                 WHERE payload->'affected' @> %s::jsonb
+                   OR payload->'affected' @> %s::jsonb
                 """,
-                (containment,),
+                (containment, cpe_containment),
             )
             return cur.fetchall()
 
@@ -483,3 +669,38 @@ def list_application_findings(application_id: str, ref: str = "", status: str = 
     columns = ("ref", "canonical_id", "vulnerability_id", "ecosystem", "release", "package_name", "purl",
                "installed_version", "fixed_version", "severity", "status", "first_seen", "last_seen", "sources")
     return [_row_dict(row, columns) for row in rows]
+
+
+def get_application_finding_details(
+    application_id: str,
+    ref: str,
+    vulnerability_id: str,
+    package_name: str,
+    installed_version: str,
+):
+    conn, _ = _connect()
+    with conn:
+        with conn.cursor() as cur:
+            _ensure_schema(cur)
+            cur.execute(
+                """
+                SELECT ref, canonical_id, vulnerability_id, ecosystem, release, package_name, purl,
+                       installed_version, fixed_version, severity, status, first_seen, last_seen, sources, evidence
+                FROM application_findings
+                WHERE application_id = %s
+                  AND ref = %s
+                  AND (vulnerability_id = %s OR canonical_id = %s)
+                  AND package_name = %s
+                  AND installed_version = %s
+                ORDER BY last_seen DESC
+                LIMIT 1
+                """,
+                (application_id, ref, vulnerability_id, vulnerability_id, package_name, installed_version),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    columns = ("ref", "canonical_id", "vulnerability_id", "ecosystem", "release", "package_name", "purl",
+               "installed_version", "fixed_version", "severity", "status", "first_seen", "last_seen", "sources",
+               "evidence")
+    return _row_dict(row, columns)

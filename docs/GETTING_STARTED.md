@@ -57,15 +57,22 @@ $env:GITHUB_TOKEN = "your-github-token"
 $env:VULN_DATABASE_URL = "postgresql://vulnintel:vulnintel@127.0.0.1:5432/vulnintel"
 ```
 
-After collecting data, start the dashboard from the project directory (or an activated project
+After collecting data, start the API from the project directory (or an activated project
 environment):
 
 ```powershell
-vuln-intel-dashboard --host 127.0.0.1 --port 8000
+python -m vuln_intel.dashboard --host 127.0.0.1 --port 8081
 ```
 
-Then open <http://127.0.0.1:8000>. It is a read-only local UI; it uses the same
-`VULN_DATABASE_URL` and binds to localhost unless explicitly configured otherwise with `--host`.
+In another terminal, start the Tactical Ops UI:
+
+```powershell
+npx --yes bun install
+npx --yes bun run dev
+```
+
+Then open <http://127.0.0.1:3000>. The UI proxies API requests to port `8081`; keep both services
+bound to localhost for local use. The production container serves the built UI and API on port `8000`.
 
 | Variable | Default | Meaning |
 |---|---|---|

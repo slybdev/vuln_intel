@@ -7,7 +7,7 @@ import re
 import uuid
 
 from vuln_intel import scan_store
-from vuln_intel.scan_matching import component_matches_affected
+from vuln_intel.scan_matching import component_matches_affected, matching_fixed_versions
 
 _APP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _COMMIT = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
@@ -39,26 +39,34 @@ def validate_scan_request(payload: dict) -> dict:
     }
 
 
-def request_scan(payload: dict):
+def request_scan(payload: dict, actor="ci"):
     request = validate_scan_request(payload)
-    return scan_store.enqueue_scan(**request)
+    return scan_store.enqueue_scan(**request, actor=actor)
 
 
-def request_latest_scan(application_id: str):
+def request_latest_scan(application_id: str, actor="local_operator"):
     if not isinstance(application_id, str):
         raise TypeError("application_id must be a string.")
     if not _APP_ID.fullmatch(application_id):
         raise ValueError("application_id must be a valid application ID.")
     event_id = f"manual-{uuid.uuid4().hex}"
     idempotency_key = hashlib.sha256(f"{application_id}\0{event_id}".encode("utf-8")).hexdigest()
-    return scan_store.enqueue_scan(application_id, "HEAD", "HEAD", idempotency_key)
+    return scan_store.enqueue_scan(
+        application_id, "HEAD", "HEAD", idempotency_key, actor=actor
+    )
 
 
-def request_inventory_initial_scan(application_id: str, external_inventory_id: str, repository_url: str):
+def request_inventory_initial_scan(application_id: str, external_inventory_id: str):
+    if not isinstance(external_inventory_id, str) or not external_inventory_id:
+        raise ValueError("external_inventory_id is required.")
+    if not _APP_ID.fullmatch(application_id):
+        raise ValueError("application_id must be a valid application ID.")
     idempotency_key = hashlib.sha256(
-        f"inventory-initial\0{external_inventory_id}\0{repository_url}".encode("utf-8")
+        f"inventory-initial-scan\0{external_inventory_id}".encode("utf-8")
     ).hexdigest()
-    return scan_store.enqueue_scan(application_id, "HEAD", "HEAD", idempotency_key)
+    return scan_store.enqueue_scan(
+        application_id, "HEAD", "HEAD", idempotency_key, actor="external_inventory"
+    )
 
 
 def _severity(*values):
@@ -131,12 +139,11 @@ def combine_findings(components: list[dict], trivy_findings: list[dict]):
             if matched_entries:
                 ids = vulnerability.get("ids") or [canonical]
                 identifier = canonical or ids[0]
-                fixed = next((version for entry in matched_entries for version in entry.get("patched") or []), None)
-                fixed = fixed or next(
-                    (interval.get("fixed") for entry in matched_entries for interval in entry.get("ranges") or []
-                     if interval.get("fixed")),
+                fixed = next(
+                    (version for entry in matched_entries for version in matching_fixed_versions(component, entry)),
                     None,
                 )
+                fixed = fixed or next((version for entry in matched_entries for version in entry.get("patched") or []), None)
                 merge_finding(component, identifier, canonical, "vuln_intel",
                               vulnerability.get("severity"), {
                                   "advisory": vulnerability,
@@ -146,7 +153,7 @@ def combine_findings(components: list[dict], trivy_findings: list[dict]):
                 evaluations[(component["component_key"], canonical)] = {
                     "component_key": component["component_key"],
                     "canonical_id": canonical,
-                    "reason": "The package has matching advisory data, but its version scheme or range could not be evaluated safely.",
+                    "reason": "Matching advisory data exists, but its package identity or version range could not be evaluated safely.",
                     "evidence": {
                         "installed_version": component["version"],
                         "affected": unknown_entries,

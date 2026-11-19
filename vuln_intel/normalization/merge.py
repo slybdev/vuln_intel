@@ -40,7 +40,7 @@ def merge_views(views):
     acc = {}
     for v in adv:
         for a in v["affected"]:
-            k = (a["ecosystem"], a.get("release"), a.get("vendor"), a["package"])
+            k = (a["ecosystem"], a.get("release"), a.get("vendor"), a["package"], a.get("target_sw"))
             e = acc.setdefault(k, {**{x: y for x, y in a.items() if x not in ("ranges", "versions", "patched")},
                                    "ranges": [], "versions": [], "patched": [], "sources": []})
             for r in a["ranges"]:

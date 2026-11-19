@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, unquote
 from packaging.version import InvalidVersion, Version
 from semantic_version import Version as SemVer
 
-from vuln_intel.normalization.ecosystems import std_ecosystem, std_package
+from vuln_intel.normalization.ecosystems import VERSION_SCHEME, std_ecosystem, std_package
 
 
 _PURL_ECOSYSTEMS = {
@@ -26,6 +26,15 @@ _PURL_ECOSYSTEMS = {
     "deb": "Debian",
     "apk": "Alpine",
 }
+
+_CPE_TARGET_SW_ECOSYSTEMS = {
+    "node.js": "npm",
+    "python": "PyPI",
+    "go": "Go",
+    "golang": "Go",
+    "rust": "crates.io",
+}
+_CPE_VENDOR_ECOSYSTEMS = {"python": "PyPI"}
 
 
 def parse_purl(purl: str | None) -> dict:
@@ -198,6 +207,8 @@ def _same_version(left: str, right: str, scheme: str) -> bool | None:
 
 
 def _range_matches(version: str, interval: dict, scheme: str) -> bool | None:
+    if interval.get("cpe_update_unsupported"):
+        return None
     try:
         current = _parse_version(version, scheme)
         introduced = interval.get("introduced")
@@ -239,8 +250,43 @@ def version_is_affected(installed_version: str, affected: dict) -> bool | None:
     return None
 
 
+def _cpe_package_mapping(component: dict, affected: dict) -> tuple[bool | None, str | None]:
+    product = affected.get("package") or ""
+    if (
+        affected.get("cpe_part") != "a"
+        or std_package(component.get("ecosystem"), product) != component.get("package_name")
+    ):
+        return False, None
+
+    target_sw = (affected.get("target_sw") or "").strip().lower()
+    if target_sw:
+        ecosystem = _CPE_TARGET_SW_ECOSYSTEMS.get(target_sw)
+    else:
+        vendor = (affected.get("vendor") or "").strip().lower()
+        ecosystem = _CPE_VENDOR_ECOSYSTEMS.get(vendor)
+        if ecosystem is None and vendor in {product.strip().lower(), f"{product.strip().lower()}_project"}:
+            ecosystem = component.get("ecosystem")
+    if ecosystem is None:
+        return None, None
+    if ecosystem != component.get("ecosystem"):
+        return False, None
+
+    scheme = VERSION_SCHEME.get(ecosystem)
+    if scheme not in {"pep440", "semver"}:
+        return None, None
+    return True, scheme
+
+
 def component_matches_affected(component: dict, affected: dict) -> bool | None:
     ecosystem, parsed_release = std_ecosystem(affected.get("ecosystem") or "")
+    if ecosystem == "cpe":
+        mapped, scheme = _cpe_package_mapping(component, affected)
+        if mapped is not True:
+            return mapped
+        ecosystem = component["ecosystem"]
+        mapped_affected = {**affected, "ecosystem": ecosystem, "package": component["package_name"], "scheme": scheme}
+        return version_is_affected(component["version"], mapped_affected)
+
     release = affected.get("release") or parsed_release
     if ecosystem != component.get("ecosystem"):
         return False
@@ -253,5 +299,24 @@ def component_matches_affected(component: dict, affected: dict) -> bool | None:
     if expected_package != component.get("package_name"):
         return False
     return version_is_affected(component["version"], affected)
+
+
+def matching_fixed_versions(component: dict, affected: dict) -> list[str]:
+    ecosystem, _ = std_ecosystem(affected.get("ecosystem") or "")
+    if ecosystem == "cpe":
+        mapped, scheme = _cpe_package_mapping(component, affected)
+        if mapped is not True:
+            return []
+    else:
+        scheme = affected.get("scheme")
+
+    if scheme not in {"semver", "pep440"}:
+        return []
+    return [
+        interval["fixed"]
+        for interval in affected.get("ranges") or []
+        if interval.get("fixed")
+        and _range_matches(component["version"], interval, scheme) is True
+    ]
 
 

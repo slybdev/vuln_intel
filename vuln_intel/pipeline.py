@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import timedelta
 
-from vuln_intel import config
+from vuln_intel import config, event_store
 from vuln_intel.collectors import COLLECTORS, ORDER, touched_cves
 from vuln_intel import database
 from vuln_intel.normalization.mappers import NORMALIZERS
@@ -68,6 +68,32 @@ def run_collect(sources, since_override=None):
     with open(config.DATA_DIR / "logs" / "runs.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"run_id": run_id, "started": iso(started), "finished": iso(utcnow()),
                             "sources": summary}) + "\n")
+    if config.DATABASE_URL:
+        for source, result in summary.items():
+            complete = result["complete"]
+            outcome = "succeeded" if complete else (
+                "partial" if result.get("count", 0) else "failed"
+            )
+            event_store.record_event(
+                severity="INFO" if complete else ("HIGH" if outcome == "failed" else "MEDIUM"),
+                category="feed",
+                event_type="feed.collection",
+                source=f"{source.upper()} feed",
+                message=(
+                    f"{source.upper()} feed collection {outcome}: "
+                    f"{result.get('count', 0)} records"
+                ),
+                target_type="feed",
+                target_id=source,
+                outcome=outcome,
+                actor="vulnerability_pipeline",
+                details={
+                    "run_id": run_id,
+                    "record_count": result.get("count", 0),
+                    "complete": complete,
+                },
+                event_key=f"feed:{run_id}:{source}",
+            )
     return run_id, any_failed
 
 
@@ -113,7 +139,33 @@ def run_process(only_runs=None):
         db["meta"] = {"generated_at": iso(utcnow()), "entity_count": len(db["vulnerabilities"]),
                       "last_run": run_id, "schema_version": 1}
         if config.DATABASE_URL:
-            baseline = database.save_snapshot(db, contribs, run_id, baseline=baseline)
+            rejected_count = len(rejected)
+            outcome = "partial" if rejected_count else "succeeded"
+            baseline = database.save_snapshot(
+                db,
+                contribs,
+                run_id,
+                baseline=baseline,
+                audit_event={
+                    "event_key": f"feed-process:{run_id}",
+                    "severity": "MEDIUM" if rejected_count else "INFO",
+                    "event_type": "feed.records_processed",
+                    "source": "Vulnerability normalization",
+                    "message": (
+                        f"Processed vulnerability feed records: {len(store.new_ids)} new, "
+                        f"{len(store.changed_ids)} updated, {rejected_count} rejected"
+                    ),
+                    "target_id": run_id,
+                    "outcome": outcome,
+                    "details": {
+                        "run_id": run_id,
+                        "new": len(store.new_ids),
+                        "updated": len(store.changed_ids),
+                        "rejected": rejected_count,
+                        "entity_count": len(db["vulnerabilities"]),
+                    },
+                },
+            )
             processed_runs.add(run_id)
         else:
             write_json(config.DB_PATH, db)

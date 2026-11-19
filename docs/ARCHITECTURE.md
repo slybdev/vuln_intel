@@ -11,7 +11,7 @@ Phase 2 and Phase 3 of the vulnerability management pipeline: gather vulnerabili
 | External sources (NVD, OSV, GitHub, CISA KEV, EPSS) | `vuln_intel/collectors/` (one module each) |
 | Scheduled data ingestion & polling | `main.py` run by cron / systemd (see `GETTING_STARTED.md`), plus per-source watermarks in `state/state.json` |
 | API feed integration & extraction pipeline | `vuln_intel/pipeline.py` → `run_collect` |
-| Read-only local dashboard and API | `vuln_intel/dashboard.py`, `dashboard_data.py`, `vuln_intel/web/` |
+| Tactical Ops UI and vulnerability API | `src/`, `vuln_intel/dashboard.py`, `dashboard_data.py` |
 | Raw vulnerability intelligence ingested | `vuln_data/raw/<run_id>/<source>.json` |
 | Field mapping & schema validation | `normalization/mappers/` and `normalization/schema.py` |
 | Duplicate detection & entity resolution | `normalization/resolver.py` |
