@@ -13,6 +13,15 @@ import {
   Target,
 } from "lucide-react";
 import { Button } from "@/src/components/ui/primitives";
+import {
+  apiFetch,
+  formatDate,
+  RepositoryList,
+  ScanList,
+  SecurityEvent,
+  SecurityEventPage,
+  VulnerabilitySummary,
+} from "@/src/lib/vuln-intel-api";
 import CommandCenterPage from "@/src/components/CommandCenterPage";
 import AgentNetworkPage from "@/src/components/AgentNetworkPage";
 import OperationsPage from "@/src/components/OperationsPage";
@@ -54,13 +63,72 @@ const SECTION_LABELS: Record<NavSection, string> = {
   scans: "FEED SCHEDULE",
 };
 
+function eventSection(category: SecurityEvent["category"]): NavSection {
+  if (category === "asset") return "systems";
+  if (category === "feed") return "scans";
+  if (category === "repository") return "agents";
+  if (category === "scan" || category === "finding") return "operations";
+  return "logs";
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavSection>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [systemMetrics, setSystemMetrics] = useState({
+    status: "checking" as "checking" | "online" | "offline",
+    advisories: 0,
+    repositories: 0,
+    activeScans: 0,
+  });
+  const [notifications, setNotifications] = useState<SecurityEvent[]>([]);
+  const [notificationsError, setNotificationsError] = useState("");
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadSystemMetrics() {
+      try {
+        const [summary, repositories, scans] = await Promise.all([
+          apiFetch<VulnerabilitySummary>("/api/summary"),
+          apiFetch<RepositoryList>("/api/repositories"),
+          apiFetch<ScanList>("/api/scans?limit=100"),
+        ]);
+        if (active) {
+          setSystemMetrics({
+            status: "online",
+            advisories: summary.total,
+            repositories: repositories.items.length,
+            activeScans: scans.items.filter(
+              (scan) => scan.status === "queued" || scan.status === "running"
+            ).length,
+          });
+        }
+      } catch {
+        if (active) setSystemMetrics((metrics) => ({ ...metrics, status: "offline" }));
+      }
+
+      try {
+        const result = await apiFetch<SecurityEventPage>(
+          "/api/security-events?page=1&page_size=5"
+        );
+        if (active) {
+          setNotifications(result.items);
+          setNotificationsError("");
+        }
+      } catch {
+        if (active) setNotificationsError("Recent security events are unavailable.");
+      }
+    }
+
+    void loadSystemMetrics();
+    return () => {
+      active = false;
+    };
+  }, [refreshTick]);
 
   useEffect(() => {
     const syncResponsive = () => {
@@ -167,13 +235,27 @@ export default function App() {
           {!sidebarCollapsed && (
             <div className="mt-8 p-4 bg-neutral-800 border border-neutral-700 rounded">
               <div className="flex items-center gap-2 mb-2">
-                <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                <span className="text-xs text-white">SYSTEM ONLINE</span>
+                <div
+                  className={`w-2 h-2 rounded-full ${
+                    systemMetrics.status === "online"
+                      ? "bg-emerald-400"
+                      : systemMetrics.status === "offline"
+                        ? "bg-rose-400"
+                        : "bg-amber-400 animate-pulse"
+                  }`}
+                />
+                <span className="text-xs text-white">
+                  {systemMetrics.status === "online"
+                    ? "SYSTEM ONLINE"
+                    : systemMetrics.status === "offline"
+                      ? "API OFFLINE"
+                      : "CHECKING API"}
+                </span>
               </div>
               <div className="text-xs text-muted-foreground space-y-0.5 tabular-nums">
-                <div>UPTIME: 72:14:33</div>
-                <div>AGENTS: 847 ACTIVE</div>
-                <div>MISSIONS: 23 ONGOING</div>
+                <div>ADVISORIES: {systemMetrics.advisories.toLocaleString()}</div>
+                <div>REPOSITORIES: {systemMetrics.repositories}</div>
+                <div>ACTIVE SCANS: {systemMetrics.activeScans}</div>
               </div>
             </div>
           )}
@@ -226,7 +308,7 @@ export default function App() {
               {notificationsOpen && (
                 <div className="absolute right-0 top-12 z-50 w-72 rounded-lg border border-border bg-card p-3 shadow-xl">
                   <div className="mb-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-orange-300">
-                    <span>Active Alerts</span>
+                    <span>Recent Security Events</span>
                     <button
                       type="button"
                       onClick={() => setNotificationsOpen(false)}
@@ -236,36 +318,35 @@ export default function App() {
                     </button>
                   </div>
                   <div className="space-y-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNotificationsOpen(false);
-                        setActiveTab("logs");
-                      }}
-                      className="w-full rounded border border-border/60 bg-background/50 p-2 text-left hover:border-orange-400/30 cursor-pointer"
-                    >
-                      <div className="font-medium text-foreground">
-                        Credential dumping detected
-                      </div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        FIN-WS-044 · 20:41:08 UTC
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNotificationsOpen(false);
-                        setActiveTab("systems");
-                      }}
-                      className="w-full rounded border border-border/60 bg-background/50 p-2 text-left hover:border-orange-400/30 cursor-pointer"
-                    >
-                      <div className="font-medium text-foreground">
-                        Security gateway warning
-                      </div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        SYS-003 · Health 87%
-                      </div>
-                    </button>
+                    {notificationsError ? (
+                      <p role="alert" className="p-2 text-muted-foreground">
+                        {notificationsError}
+                      </p>
+                    ) : notifications.length ? (
+                      notifications.map((event) => (
+                        <button
+                          key={event.event_id}
+                          type="button"
+                          onClick={() => {
+                            setNotificationsOpen(false);
+                            setActiveTab(eventSection(event.category));
+                          }}
+                          className="w-full rounded border border-border/60 bg-background/50 p-2 text-left hover:border-orange-400/30 cursor-pointer"
+                        >
+                          <div className="font-medium text-foreground">
+                            {event.message}
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
+                            {event.severity} · {event.category} ·{" "}
+                            {formatDate(event.occurred_at)}
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="p-2 text-muted-foreground">
+                        No recent security events.
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
